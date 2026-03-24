@@ -15,7 +15,24 @@
 
 ## 使用
 
-## 本地网络一键跑（推荐）
+## 本地 UI 应用（一键点点点，推荐给非技术同学）
+
+你说的“封装成轻量本地应用、不会命令行也能用”，现在可以直接运行 GUI：
+
+```bash
+python app_gui.py
+```
+
+打开后按界面顺序操作：
+1. 选择 `channels.txt`、`auth.json`、输出目录；
+2. 点“打开小宇宙官网登录”，登录后把 token/cookie 粘贴到界面并保存；
+3. 点“开始采集”。  
+
+程序会在界面日志里显示进度，并把 CSV 输出到你选的目录。
+
+---
+
+## 本地网络一键跑（命令行推荐）
 
 > 你问的“怎么在本地网络跑、能不能直接封装”，直接用这个：
 
@@ -69,6 +86,17 @@ python discover.py --channels channels.txt --auth-file auth.json --out out/field
 - 请在你自己的网络环境运行（当前容器环境对目标站点存在 403 隧道限制）。
 - 推荐先小规模试跑：`channels.txt` 先放 3~5 个频道，验证后再放满 100 个。
 - 若 `auth.json` 过期，删除后重新执行 `python one_click.py --login ...` 即可刷新凭据。
+
+## 可选：打包成双击可运行（Windows）
+
+如果你要发给完全不会 Python 的同事，可在本地执行：
+
+```bash
+pip install pyinstaller
+pyinstaller -F -w app_gui.py -n xiaoyuzhou_crawler_gui
+```
+
+打包后可执行文件在 `dist/xiaoyuzhou_crawler_gui.exe`。
 
 ## 说明
 
