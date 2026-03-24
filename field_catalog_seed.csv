@@ -1,0 +1,78 @@
+source_doc,field_path,type,description
+podcastDetail.md,x-jike-access-token,true,string
+podcastDetail.md,pid,true,string
+podcastDetail.md,返回字段,类型,说明
+podcastDetail.md,type,string,类别。节目、单集等，详情看 type 对应的类别说明文档
+podcastDetail.md,title,string,节目标题
+podcastDetail.md,subscriptionCount,number,节目订阅数
+podcastDetail.md,pid,string,节目 id
+podcastDetail.md,episodeCount,number,节目内单集数
+podcastDetail.md,description,string,描述
+podcastDetail.md,podcasters,array,播客嘉宾的信息（头像、昵称和 uid 等）
+podcastDetail.md,image,object,节目封面
+podcastDetail.md,color,object,节目主题色
+podcastDetail.md,...,...,...
+episodeList.md,x-jike-access-token,true,string
+episodeList.md,pid,true,string
+episodeList.md,order,true,string
+episodeList.md,loadMoreKey,false,object
+episodeList.md,返回字段,类型,说明
+episodeList.md,type,string,类别。节目、单集等，详情看type对应的类别说明文档
+episodeList.md,pid,string,节目id
+episodeList.md,eid,string,单集id
+episodeList.md,title,string,标题
+episodeList.md,author,string,作者
+episodeList.md,shownotes,string,注释
+episodeList.md,description,string,描述
+episodeList.md,media,object,播客音频信息（大小、链接等）
+episodeList.md,podcasters,array,播客嘉宾的信息（头像、昵称和uid等）
+episodeList.md,loadMoreKey,object,如果存在下一页，则会返回该对象。将这个对象传入请求参数，便可实现分页查询
+episodeList.md,...,...,...
+episodeDetail.md,x-jike-access-token,true,string
+episodeDetail.md,eid,true,string
+episodeDetail.md,返回字段,类型,说明
+episodeDetail.md,type,string,类别。节目、单集等，详情看 type 对应的类别说明文档
+episodeDetail.md,pid,string,该单集所属的节目 id
+episodeDetail.md,eid,string,当前单集的 id
+episodeDetail.md,title,string,标题
+episodeDetail.md,commentCount,number,评论数
+episodeDetail.md,playCount,number,播放量
+episodeDetail.md,duration,number,时长
+episodeDetail.md,shownotes,string,详情
+episodeDetail.md,description,string,描述
+episodeDetail.md,media,object,播客音频信息（大小、链接等）
+episodeDetail.md,podcast,object,当前单集所属的节目信息
+episodeDetail.md,podcast.podcasters,array,播客嘉宾的信息（头像、昵称和 uid 等）
+episodeDetail.md,isCustomized,boolean,是否定制
+episodeDetail.md,isFavorited,boolean,是否收藏
+episodeDetail.md,isFinished,boolean,是否已听完
+episodeDetail.md,...,...,...
+commentPrimary.md,x-jike-access-token,true,string
+commentPrimary.md,id,true,string
+commentPrimary.md,order,true,string
+commentPrimary.md,返回字段,类型,说明
+commentPrimary.md,type,string,类别
+commentPrimary.md,id,string,该评论的 id
+commentPrimary.md,owner,object,该评论所属的单集的信息
+commentPrimary.md,author,object,该评论发布者的信息
+commentPrimary.md,text,string,评论正文
+commentPrimary.md,likeCount,number,评论点赞数
+commentPrimary.md,liked,boolean,是否已点赞该评论
+commentPrimary.md,collected,boolean,是否已收藏该评论
+commentPrimary.md,createdAt,string,评论发布时间
+commentPrimary.md,pinned,boolean,是否置顶评论
+commentPrimary.md,threadReplyCount,number,评论回复数
+commentPrimary.md,replies,array,展示该评论的部分回复内容
+commentPrimary.md,totalCount,number,总评论数
+commentPrimary.md,loadMoreKey,object,如果存在下一页，则会返回该对象。将这个对象传入请求参数，便可实现分页查询
+commentPrimary.md,...,...,...
+topList.md,x-jike-access-token,true,string
+topList.md,category,true,string
+topList.md,返回字段,类型,说明
+topList.md,background,string,背景图片
+topList.md,information,string,榜单说明
+topList.md,items,array,榜单内容
+topList.md,publishDate,string,更新时间
+topList.md,rulesUrl,string,榜单规则链接
+topList.md,title,string,榜单标题
+topList.md,type,string,类别。节目、单集等，详情看type对应的类别说明文档
