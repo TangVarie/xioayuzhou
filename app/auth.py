@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from cryptography.fernet import Fernet, InvalidToken
 
 from app.config import get_settings
-from app.supabase_client import supabase
 
-TABLE = "auth_state"
-ROW_ID = "zhuiguang"
+STATE_FILENAME = "storage_state.enc"
+
+
+def _path() -> Path:
+    return Path(get_settings().state_dir) / STATE_FILENAME
 
 
 def _fernet() -> Fernet:
@@ -18,31 +20,30 @@ def _fernet() -> Fernet:
 
 
 def save_state(state: dict) -> None:
-    blob = _fernet().encrypt(json.dumps(state, ensure_ascii=False).encode()).decode()
-    row = {
-        "id": ROW_ID,
-        "encrypted_state": blob,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    supabase().table(TABLE).upsert(row).execute()
+    p = _path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    blob = _fernet().encrypt(json.dumps(state, ensure_ascii=False).encode())
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_bytes(blob)
+    tmp.replace(p)
 
 
 def load_state() -> Optional[dict]:
-    res = supabase().table(TABLE).select("encrypted_state").eq("id", ROW_ID).limit(1).execute()
-    rows = res.data or []
-    if not rows:
+    p = _path()
+    if not p.exists():
         return None
-    blob = rows[0]["encrypted_state"]
     try:
-        plain = _fernet().decrypt(blob.encode()).decode()
+        plain = _fernet().decrypt(p.read_bytes()).decode()
     except InvalidToken:
         return None
     return json.loads(plain)
 
 
 def clear_state() -> None:
-    supabase().table(TABLE).delete().eq("id", ROW_ID).execute()
+    p = _path()
+    if p.exists():
+        p.unlink()
 
 
 def has_state() -> bool:
-    return load_state() is not None
+    return _path().exists()

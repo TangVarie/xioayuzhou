@@ -16,8 +16,7 @@ class Settings(BaseSettings):
     admin_token: str = Field(..., alias="ADMIN_TOKEN")
     fernet_key: str = Field(..., alias="FERNET_KEY")
 
-    supabase_url: str = Field(..., alias="SUPABASE_URL")
-    supabase_service_role_key: str = Field(..., alias="SUPABASE_SERVICE_ROLE_KEY")
+    state_dir: str = Field("/data", alias="STATE_DIR")
 
     zhuiguang_base_url: str = Field("https://zhuiguang.xyz", alias="ZHUIGUANG_BASE_URL")
     display: str = Field(":99", alias="DISPLAY")

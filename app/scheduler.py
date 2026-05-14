@@ -5,29 +5,19 @@ import logging
 import os
 from datetime import datetime, time, timedelta, timezone
 
-from app.runner import keepalive_ping, run_scan_all
+from app.runner import run_scan_all
 
 LOGGER = logging.getLogger(__name__)
 
-KEEPALIVE_INTERVAL = timedelta(days=2)
-DAILY_SCAN_HOUR_UTC = int(os.getenv("DAILY_SCAN_HOUR_UTC", "20"))  # 默认 UTC 20:00 = 北京 04:00
+DAILY_SCAN_HOUR_UTC = int(os.getenv("DAILY_SCAN_HOUR_UTC", "20"))  # UTC 20:00 = 北京 04:00
 ENABLE_DAILY_SCAN = os.getenv("ENABLE_DAILY_SCAN", "1") not in ("0", "false", "False", "")
 
 
 async def start() -> list[asyncio.Task]:
-    tasks: list[asyncio.Task] = [asyncio.create_task(_keepalive_loop(), name="keepalive")]
+    tasks: list[asyncio.Task] = []
     if ENABLE_DAILY_SCAN:
         tasks.append(asyncio.create_task(_daily_scan_loop(), name="daily_scan"))
     return tasks
-
-
-async def _keepalive_loop() -> None:
-    while True:
-        try:
-            await keepalive_ping()
-        except Exception as exc:
-            LOGGER.warning("keepalive failed: %s", exc)
-        await asyncio.sleep(KEEPALIVE_INTERVAL.total_seconds())
 
 
 async def _daily_scan_loop() -> None:

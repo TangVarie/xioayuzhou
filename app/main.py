@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app import auth, login_session, scheduler
 from app.config import get_settings
-from app.runner import run_for_record, run_scan_all, scan_status
+from app.runner import run_for_record, run_scan_all, scan_status, tail_log
 from app.scraper import LoginRequired, scrape
 
 LOGGER = logging.getLogger("uvicorn.error")
@@ -216,6 +216,15 @@ async def admin_scan_all(
 async def admin_scan_status(token: Optional[str] = Query(default=None)) -> dict:
     _require_admin(token)
     return scan_status()
+
+
+@app.get("/admin/log")
+async def admin_log(
+    token: Optional[str] = Query(default=None),
+    n: int = Query(default=100, ge=1, le=1000),
+) -> dict:
+    _require_admin(token)
+    return {"entries": tail_log(n)}
 
 
 def _require_admin(token: Optional[str]) -> None:

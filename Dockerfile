@@ -31,7 +31,12 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
 
 ENV DISPLAY=:99 \
     NOVNC_PORT=6080 \
-    APP_PORT=8000
+    APP_PORT=8000 \
+    STATE_DIR=/data
+
+RUN mkdir -p /data
+
+VOLUME ["/data"]
 
 EXPOSE 8080
 
