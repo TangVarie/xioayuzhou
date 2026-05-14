@@ -63,6 +63,31 @@ class FeishuClient:
             raise RuntimeError(f"读取记录失败: {data}")
         return data["data"]["record"]
 
+    def list_records(self, *, page_size: int = 200) -> list[dict]:
+        url = (
+            f"{OPEN_API}/bitable/v1/apps/{self._app_token}"
+            f"/tables/{self._table_id}/records"
+        )
+        items: list[dict] = []
+        page_token: Optional[str] = None
+        while True:
+            params: dict[str, Any] = {"page_size": page_size}
+            if page_token:
+                params["page_token"] = page_token
+            r = self._http.get(url, headers=self._auth_headers(), params=params)
+            r.raise_for_status()
+            data = r.json()
+            if data.get("code") != 0:
+                raise RuntimeError(f"列出记录失败: {data}")
+            payload = data.get("data") or {}
+            items.extend(payload.get("items") or [])
+            if not payload.get("has_more"):
+                break
+            page_token = payload.get("page_token")
+            if not page_token:
+                break
+        return items
+
     def update_record(self, record_id: str, fields: dict[str, Any]) -> dict:
         url = (
             f"{OPEN_API}/bitable/v1/apps/{self._app_token}"

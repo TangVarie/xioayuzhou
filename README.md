@@ -66,6 +66,42 @@
 >   "https://<域名>/admin/upload-state?token=<ADMIN_TOKEN>"
 > ```
 
+## 批量刷新（避免一个个按按钮）
+
+服务内置了"扫整表"的能力，三种触发方式都能用，选你顺手的：
+
+### 1) 服务内置定时任务（默认开启）
+启动后每天 UTC 20:00（北京 04:00）会自动跑一次 `scan_all`，把全表所有行都刷一遍。环境变量控制：
+- `ENABLE_DAILY_SCAN=1`（设 0 可以关）
+- `DAILY_SCAN_HOUR_UTC=20`（改成别的小时，0~23）
+
+### 2) 飞书侧加一个"全表刷新"按钮
+在飞书表格里随便挑一行（或者新建一个"控制面板"行）放个按钮：
+- 自动化流程 → 发送 HTTP 请求 → URL 还是 `https://<域名>/feishu/trigger`
+- Body 改成：
+  ```json
+  { "scan_all": true }
+  ```
+- 服务收到后会异步跑全表，立刻返回 `{"accepted": true, "mode": "scan_all"}`。
+
+### 3) 直接打 API
+```bash
+# 异步触发，立即返回
+curl -X POST "https://<域名>/admin/scan-all?token=<ADMIN_TOKEN>"
+
+# 同步等完（小表用，大表会超时）
+curl -X POST "https://<域名>/admin/scan-all?token=<ADMIN_TOKEN>&wait=true"
+
+# 查进度
+curl "https://<域名>/admin/scan-status?token=<ADMIN_TOKEN>"
+```
+返回类似：
+```json
+{ "state": "running", "total": 100, "done": 37, "ok": 35, "skipped": 1, "errors": 1, ... }
+```
+
+按行内单点按钮仍然有用：只刷某一行的话比扫全表更省时间。两套并存，谁顺手用谁。
+
 ## 调试
 
 - `GET /healthz` — 健康检查，会返回是否已有登录态。
@@ -93,8 +129,19 @@ uvicorn app.main:app --reload --port 8000
 - `/feishu/trigger` 使用 `X-Trigger-Secret` 校验请求来自飞书自动化（与飞书 webhook 节点的 Header 一致即可）。
 - 不要把 service_role key 暴露在前端；它具有绕过 RLS 的能力。
 
+## Supabase 注意事项
+
+### 7 天闲置自动 pause（免费版）
+免费版 Supabase 在 7 天内"无任何流量"才会 pause。我们的服务每天有 scan_all 跑、有按钮触发、还有内置的 keepalive（默认每 2 天写一条 `scrape_log status=keepalive`），所以正常情况下不会被 pause。如果你长期完全停用这个服务、且不想被 pause，可以：
+- 让 Railway 服务保持运行（即使没人点按钮，keepalive 也会兜底）
+- 或者直接升级 Supabase Pro
+
+### 2026-05-30 / 10-30 Data API 变更
+Supabase 邮件说从 2026-05-30 起新项目的 public 表默认不暴露给 Data API（supabase-py 走的就是 Data API），10-30 后所有项目都强制。我们的 [`docs/supabase_schema.sql`](./docs/supabase_schema.sql) 里已经显式 `grant ... to service_role`，所以无论你在哪个时间点新建项目都能跑。如果你已经按旧 SQL 建过表，重新执行一次 SQL 即可（带 `if not exists`，幂等）。
+
 ## 已知限制
 
 - zhuiguang.xyz 页面结构若改版，需调整 `app/scraper.py` 的正则/选择器。
 - 单实例服务，并发抓取会被 Playwright 串行化（高并发时可加队列）。
 - noVNC 仅在登录时使用，非登录时 headed Chrome 不会驻留，资源占用很低。
+- 内置的 daily scan 是单实例 asyncio 调度，服务重启会重新等下一个时刻；不要求精确，只要每天至少能跑一次即可。

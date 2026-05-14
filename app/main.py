@@ -8,13 +8,32 @@ from typing import Optional
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from app import auth, login_session
+from app import auth, login_session, scheduler
 from app.config import get_settings
-from app.runner import run_for_record
+from app.runner import run_for_record, run_scan_all, scan_status
 from app.scraper import LoginRequired, scrape
 
 LOGGER = logging.getLogger("uvicorn.error")
 app = FastAPI(title="xiaoyuzhou-zhuiguang-sync")
+
+_scheduler_tasks: list[asyncio.Task] = []
+
+
+@app.on_event("startup")
+async def _on_startup() -> None:
+    global _scheduler_tasks
+    _scheduler_tasks = await scheduler.start()
+
+
+@app.on_event("shutdown")
+async def _on_shutdown() -> None:
+    for task in _scheduler_tasks:
+        task.cancel()
+    for task in _scheduler_tasks:
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 @app.get("/healthz")
@@ -32,6 +51,9 @@ async def feishu_trigger(
     if x_trigger_secret != s.feishu_webhook_secret:
         raise HTTPException(status_code=401, detail="invalid secret")
     body = await request.json()
+    if _is_scan_all_payload(body):
+        background.add_task(_safe_scan_all)
+        return {"accepted": True, "mode": "scan_all"}
     record_id = _extract_record_id(body)
     if not record_id:
         raise HTTPException(status_code=400, detail="missing record_id in payload")
@@ -177,6 +199,25 @@ async def admin_run(
     return await run_for_record(record_id)
 
 
+@app.post("/admin/scan-all")
+async def admin_scan_all(
+    background: BackgroundTasks,
+    token: Optional[str] = Query(default=None),
+    wait: bool = Query(default=False),
+) -> dict:
+    _require_admin(token)
+    if wait:
+        return await run_scan_all()
+    background.add_task(_safe_scan_all)
+    return {"accepted": True, **scan_status()}
+
+
+@app.get("/admin/scan-status")
+async def admin_scan_status(token: Optional[str] = Query(default=None)) -> dict:
+    _require_admin(token)
+    return scan_status()
+
+
 def _require_admin(token: Optional[str]) -> None:
     s = get_settings()
     if token != s.admin_token:
@@ -199,8 +240,25 @@ def _extract_record_id(payload: dict) -> Optional[str]:
     return None
 
 
+def _is_scan_all_payload(payload: dict) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    for key in ("scan_all", "scanAll", "all"):
+        v = payload.get(key)
+        if v in (True, "true", "True", 1, "1"):
+            return True
+    return False
+
+
 async def _safe_run(record_id: str) -> None:
     try:
         await run_for_record(record_id)
     except Exception as exc:
         LOGGER.exception("background run failed for %s: %s", record_id, exc)
+
+
+async def _safe_scan_all() -> None:
+    try:
+        await run_scan_all()
+    except Exception as exc:
+        LOGGER.exception("background scan_all failed: %s", exc)
