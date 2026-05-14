@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+import time
+from typing import Any, Optional
+
+import httpx
+
+from app.config import get_settings
+
+OPEN_API = "https://open.feishu.cn/open-apis"
+
+FIELD_TYPES = {
+    "订阅数": "number",
+    "平均收听量": "number",
+    "平均节目时长": "number",
+    "平均播放时长": "number",
+    "平均评论数": "number",
+    "订阅用户女性占比": "progress",
+    "订阅用户主要年龄分布": "multi_select",
+    "用户主要地域分布": "multi_select",
+    "订阅用户设备iphone占比": "progress",
+}
+
+
+class FeishuClient:
+    def __init__(self) -> None:
+        s = get_settings()
+        self._app_id = s.feishu_app_id
+        self._app_secret = s.feishu_app_secret
+        self._app_token = s.feishu_app_token
+        self._table_id = s.feishu_table_id
+        self._token: Optional[str] = None
+        self._token_expire_at: float = 0.0
+        self._http = httpx.Client(timeout=20.0)
+
+    def _tenant_token(self) -> str:
+        if self._token and time.time() < self._token_expire_at - 60:
+            return self._token
+        r = self._http.post(
+            f"{OPEN_API}/auth/v3/tenant_access_token/internal",
+            json={"app_id": self._app_id, "app_secret": self._app_secret},
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != 0:
+            raise RuntimeError(f"获取 tenant_access_token 失败: {data}")
+        self._token = data["tenant_access_token"]
+        self._token_expire_at = time.time() + data["expire"]
+        return self._token
+
+    def _auth_headers(self) -> dict:
+        return {"Authorization": f"Bearer {self._tenant_token()}"}
+
+    def get_record(self, record_id: str) -> dict:
+        url = (
+            f"{OPEN_API}/bitable/v1/apps/{self._app_token}"
+            f"/tables/{self._table_id}/records/{record_id}"
+        )
+        r = self._http.get(url, headers=self._auth_headers())
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != 0:
+            raise RuntimeError(f"读取记录失败: {data}")
+        return data["data"]["record"]
+
+    def update_record(self, record_id: str, fields: dict[str, Any]) -> dict:
+        url = (
+            f"{OPEN_API}/bitable/v1/apps/{self._app_token}"
+            f"/tables/{self._table_id}/records/{record_id}"
+        )
+        r = self._http.put(
+            url,
+            headers=self._auth_headers(),
+            json={"fields": _normalize_fields(fields)},
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != 0:
+            raise RuntimeError(f"更新记录失败: {data}")
+        return data["data"]["record"]
+
+
+def _normalize_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for name, value in fields.items():
+        if value is None:
+            continue
+        kind = FIELD_TYPES.get(name)
+        if kind == "number":
+            out[name] = float(value)
+        elif kind == "progress":
+            v = float(value)
+            if v > 1.0:
+                v = v / 100.0
+            out[name] = max(0.0, min(1.0, v))
+        elif kind == "multi_select":
+            if isinstance(value, str):
+                out[name] = [v.strip() for v in value.split(",") if v.strip()]
+            else:
+                out[name] = [str(v).strip() for v in value if str(v).strip()]
+        else:
+            out[name] = value
+    return out
+
+
+def extract_link(record: dict, link_field: str) -> Optional[str]:
+    fields = record.get("fields", {})
+    v = fields.get(link_field)
+    if v is None:
+        return None
+    if isinstance(v, str):
+        return v
+    if isinstance(v, dict):
+        return v.get("link") or v.get("text")
+    if isinstance(v, list) and v:
+        first = v[0]
+        if isinstance(first, dict):
+            return first.get("link") or first.get("text")
+        return str(first)
+    return None

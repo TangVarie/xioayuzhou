@@ -1,0 +1,12 @@
+.env
+.env.local
+*.pyc
+__pycache__/
+.venv/
+venv/
+.idea/
+.vscode/
+*.log
+storage_state.json
+out/
+.DS_Store
