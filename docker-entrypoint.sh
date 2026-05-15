@@ -7,6 +7,8 @@ export NOVNC_PORT="${NOVNC_PORT:-6080}"
 export APP_PORT="${APP_PORT:-8000}"
 export LISTEN_PORT="${PORT:-8080}"
 
+echo "[entrypoint] PORT=${PORT:-(unset)} LISTEN_PORT=${LISTEN_PORT} APP_PORT=${APP_PORT} NOVNC_PORT=${NOVNC_PORT}"
+
 envsubst '${APP_PORT} ${NOVNC_PORT} ${LISTEN_PORT}' \
   < /etc/nginx/sites-available/default \
   > /etc/nginx/sites-available/default.rendered
