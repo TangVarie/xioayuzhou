@@ -36,8 +36,6 @@ ENV DISPLAY=:99 \
 
 RUN mkdir -p /data
 
-VOLUME ["/data"]
-
 EXPOSE 8080
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
