@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     novnc \
     websockify \
     nginx \
+    gettext-base \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
