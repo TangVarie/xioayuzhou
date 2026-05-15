@@ -44,7 +44,20 @@ async def scrape(url: str, *, debug: bool = False) -> ScrapeResult:
         context = await browser.new_context(storage_state=state, viewport=VIEWPORT)
         page = await context.new_page()
         xhr: list[dict[str, Any]] = []
-        page.on("response", lambda resp: _maybe_capture(resp, xhr))
+
+        async def on_response(resp):
+            try:
+                ct = (resp.headers or {}).get("content-type", "")
+                if "application/json" not in ct:
+                    return
+                if resp.status >= 400:
+                    return
+                body = await resp.json()
+                xhr.append({"url": resp.url, "status": resp.status, "body": body})
+            except Exception:
+                return
+
+        page.on("response", on_response)
 
         await page.goto(url, wait_until="networkidle", timeout=NAV_TIMEOUT_MS)
 
@@ -56,6 +69,17 @@ async def scrape(url: str, *, debug: bool = False) -> ScrapeResult:
             await page.wait_for_selector(READY_SELECTOR, timeout=READY_TIMEOUT_MS)
         except Exception:
             pass
+
+        # 尝试点击"听众分析"tab，让对应数据被加载（如果存在的话）
+        try:
+            await page.get_by_text("听众分析", exact=True).first.click(timeout=3000)
+            await page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception:
+            pass
+
+        # 给 response handler 一点时间完成 (await body 是异步的)
+        import asyncio as _asyncio
+        await _asyncio.sleep(1.0)
 
         page_text = await page.evaluate("() => document.body.innerText")
         result = ScrapeResult(url=url, page_text=page_text, raw_xhr=xhr)
@@ -78,29 +102,6 @@ async def scrape(url: str, *, debug: bool = False) -> ScrapeResult:
 def _looks_like_login_page(current_url: str) -> bool:
     lowered = current_url.lower()
     return "login" in lowered or "signin" in lowered or "auth" in lowered
-
-
-def _maybe_capture(resp, sink: list[dict[str, Any]]) -> None:
-    try:
-        ct = (resp.headers or {}).get("content-type", "")
-        if "application/json" not in ct:
-            return
-        if resp.status >= 400:
-            return
-        url = resp.url
-    except Exception:
-        return
-
-    async def _read():
-        try:
-            body = await resp.json()
-        except Exception:
-            return
-        sink.append({"url": url, "body": body})
-
-    import asyncio
-
-    asyncio.create_task(_read())
 
 
 _NUMBER_RE = re.compile(r"-?\d+(?:[.,]\d+)*")

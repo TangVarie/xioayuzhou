@@ -153,13 +153,15 @@ async def admin_clear_state(token: Optional[str] = Query(default=None)) -> dict:
 async def admin_debug(
     token: Optional[str] = Query(default=None),
     url: str = Query(...),
+    with_xhr: bool = Query(default=False),
+    xhr_filter: Optional[str] = Query(default=None),
 ) -> dict:
     _require_admin(token)
     try:
         result = await scrape(url, debug=True)
     except LoginRequired as exc:
         raise HTTPException(status_code=409, detail=str(exc))
-    return {
+    out: dict = {
         "url": result.url,
         "fields": result.fields,
         "missing": result.missing,
@@ -168,6 +170,12 @@ async def admin_debug(
         "xhr_urls": [x["url"] for x in result.raw_xhr][:50],
         "screenshot": result.screenshot_path,
     }
+    if with_xhr:
+        entries = result.raw_xhr
+        if xhr_filter:
+            entries = [x for x in entries if xhr_filter in x.get("url", "")]
+        out["xhr_bodies"] = entries
+    return out
 
 
 @app.post("/admin/run")
