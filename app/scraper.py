@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
@@ -8,14 +9,30 @@ from typing import Any, Optional
 from playwright.async_api import async_playwright
 
 from app.auth import load_state, save_state
-from app.config import FieldSpec, get_settings
+from app.config import Settings, get_settings
 
 LOGGER = logging.getLogger(__name__)
 
 VIEWPORT = {"width": 1440, "height": 900}
-READY_SELECTOR = "text=订阅数"
 NAV_TIMEOUT_MS = 60000
-READY_TIMEOUT_MS = 15000
+DISTRIBUTION_THRESHOLD = 0.10  # 多选字段：分布占比 >= 10% 算"主要"
+
+PID_RE = re.compile(r"/podcast/([0-9a-fA-F]+)")
+
+AGE_LABELS = {
+    "under_18": "<18",
+    "between_18_and_22": "18-22",
+    "between_23_and_28": "23-28",
+    "between_29_and_35": "29-35",
+    "between_36_and_40": "36-40",
+    "over_40": ">40",
+}
+
+CITY_LABELS = {
+    "first_level": "一线（含新一线）",
+    "second_level": "二线及以下",
+    "oversea": "海外",
+}
 
 
 @dataclass
@@ -26,6 +43,7 @@ class ScrapeResult:
     page_text: str = ""
     screenshot_path: Optional[str] = None
     missing: list[str] = field(default_factory=list)
+    api_data: Optional[dict[str, Any]] = None
 
 
 class LoginRequired(Exception):
@@ -37,7 +55,11 @@ async def scrape(url: str, *, debug: bool = False) -> ScrapeResult:
     if not state:
         raise LoginRequired("尚未保存 zhuiguang.xyz 登录态，请先在管理员页面完成登录")
 
-    specs = get_settings().field_specs()
+    pid = _extract_pid(url)
+    if not pid:
+        raise ValueError(f"URL 里找不到 pid: {url}")
+
+    settings = get_settings()
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True, args=["--no-sandbox"])
@@ -65,33 +87,51 @@ async def scrape(url: str, *, debug: bool = False) -> ScrapeResult:
             await browser.close()
             raise LoginRequired("zhuiguang.xyz 登录态已失效，请重新登录")
 
-        try:
-            await page.wait_for_selector(READY_SELECTOR, timeout=READY_TIMEOUT_MS)
-        except Exception:
-            pass
+        # 给 response handler 一点时间完成（await body 是异步的）
+        await asyncio.sleep(0.5)
 
-        # 尝试点击"听众分析"tab，让对应数据被加载（如果存在的话）
-        try:
-            await page.get_by_text("听众分析", exact=True).first.click(timeout=3000)
-            await page.wait_for_load_state("networkidle", timeout=10000)
-        except Exception:
-            pass
+        api_data = _find_podcast_data(xhr, pid)
 
-        # 给 response handler 一点时间完成 (await body 是异步的)
-        import asyncio as _asyncio
-        await _asyncio.sleep(1.0)
+        # 兜底：XHR 没捕获到就主动调一次
+        if api_data is None:
+            try:
+                api_data = await page.evaluate(
+                    """async (pid) => {
+                        const r = await fetch('https://api.zhuiguang.xyz/v1/podcast/get?pid=' + pid, {credentials: 'include'});
+                        if (!r.ok) return null;
+                        const j = await r.json();
+                        return j.data || null;
+                    }""",
+                    pid,
+                )
+            except Exception as exc:
+                LOGGER.warning("fallback fetch podcast/get failed: %s", exc)
 
-        page_text = await page.evaluate("() => document.body.innerText")
-        result = ScrapeResult(url=url, page_text=page_text, raw_xhr=xhr)
-        result.fields = _extract_fields(page_text, xhr, specs)
+        result = ScrapeResult(url=url, raw_xhr=xhr, api_data=api_data)
+
+        if api_data:
+            result.fields = _extract_from_api(api_data, settings)
+
+        # 给所有 spec 都补上 key（即使是 None / []），方便上层一致处理 missing
+        for spec in settings.field_specs():
+            result.fields.setdefault(spec.name, [] if spec.kind == "multi_select" else None)
         result.missing = [
-            spec.name for spec in specs if result.fields.get(spec.name) in (None, "", [])
+            spec.name
+            for spec in settings.field_specs()
+            if result.fields.get(spec.name) in (None, "", [])
         ]
 
         if debug:
             shot = "/tmp/zhuiguang_debug.png"
-            await page.screenshot(path=shot, full_page=True)
-            result.screenshot_path = shot
+            try:
+                await page.screenshot(path=shot, full_page=True)
+                result.screenshot_path = shot
+            except Exception:
+                pass
+            try:
+                result.page_text = await page.evaluate("() => document.body.innerText")
+            except Exception:
+                pass
 
         state_after = await context.storage_state()
         save_state(state_after)
@@ -99,161 +139,65 @@ async def scrape(url: str, *, debug: bool = False) -> ScrapeResult:
         return result
 
 
+def _extract_pid(url: str) -> Optional[str]:
+    m = PID_RE.search(url)
+    return m.group(1) if m else None
+
+
 def _looks_like_login_page(current_url: str) -> bool:
     lowered = current_url.lower()
     return "login" in lowered or "signin" in lowered or "auth" in lowered
 
 
-_NUMBER_RE = re.compile(r"-?\d+(?:[.,]\d+)*")
-_PERCENT_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*%")
+def _find_podcast_data(xhr: list[dict[str, Any]], pid: str) -> Optional[dict]:
+    for entry in xhr:
+        u = entry.get("url", "")
+        if "/v1/podcast/get" in u and pid in u:
+            body = entry.get("body") or {}
+            data = body.get("data")
+            if isinstance(data, dict):
+                return data
+    return None
 
 
-def _extract_fields(
-    text: str, xhr: list[dict[str, Any]], specs: list[FieldSpec]
-) -> dict[str, Any]:
-    fields: dict[str, Any] = {}
-    text_norm = _normalize_text(text)
+def _extract_from_api(data: dict, settings: Settings) -> dict[str, Any]:
+    out: dict[str, Any] = {}
 
-    for spec in specs:
-        if spec.kind == "progress":
-            fields[spec.name] = _extract_percent(text_norm, spec.name)
-        elif spec.kind == "multi_select":
-            fields[spec.name] = _extract_multi(text_norm, xhr, spec.name)
-        elif spec.kind == "duration":
-            fields[spec.name] = _extract_number(text_norm, spec.name, is_duration=True)
-        else:
-            fields[spec.name] = _extract_number(text_norm, spec.name, is_duration=False)
+    if (v := data.get("subscriptionCount")) is not None:
+        out[settings.field_subscribers] = v
+    if (v := data.get("avgPlayCount")) is not None:
+        out[settings.field_avg_listen] = v
+    if (v := data.get("avgDurationInSeconds")) is not None:
+        out[settings.field_avg_duration] = round(float(v) / 60.0, 1)
+    if (v := data.get("avgUserEpisodePlayedSeconds")) is not None:
+        out[settings.field_avg_play] = round(float(v) / 60.0, 1)
+    if (v := data.get("avgCommentCount")) is not None:
+        out[settings.field_avg_comments] = v
 
-    for spec in specs:
-        if fields.get(spec.name) in (None, "", []):
-            json_val = _search_xhr(xhr, spec.name)
-            if json_val is not None:
-                fields[spec.name] = json_val
-    return fields
+    if isinstance(gd := data.get("genderDistribution"), dict):
+        if (v := gd.get("female")) is not None:
+            out[settings.field_female_ratio] = float(v)
 
+    if isinstance(md := data.get("manufacturerDistribution"), dict):
+        if (v := md.get("apple")) is not None:
+            out[settings.field_iphone_ratio] = float(v)
 
-def _normalize_text(text: str) -> str:
-    return text.replace("　", " ").replace(":", ":")
+    if isinstance(ad := data.get("ageDistribution"), dict):
+        out[settings.field_age_distribution] = _top_labels(ad, AGE_LABELS)
 
+    if isinstance(cd := data.get("cityDistribution"), dict):
+        out[settings.field_location_distribution] = _top_labels(cd, CITY_LABELS)
 
-def _extract_number(text: str, label: str, *, is_duration: bool) -> Optional[float]:
-    pattern = re.compile(rf"{re.escape(label)}\s*[:：]?\s*([^\n]*)")
-    m = pattern.search(text)
-    if not m:
-        return None
-    chunk = m.group(1).strip()
-    if is_duration:
-        return _parse_duration(chunk)
-    return _first_number(chunk)
-
-
-def _extract_percent(text: str, label: str) -> Optional[float]:
-    pattern = re.compile(rf"{re.escape(label)}\s*[:：]?\s*([^\n]*)")
-    m = pattern.search(text)
-    if not m:
-        return None
-    chunk = m.group(1).strip()
-    pm = _PERCENT_RE.search(chunk)
-    if pm:
-        return float(pm.group(1)) / 100.0
-    num = _first_number(chunk)
-    if num is None:
-        return None
-    return num if num <= 1 else num / 100.0
-
-
-def _extract_multi(text: str, xhr: list[dict[str, Any]], label: str) -> list[str]:
-    pattern = re.compile(rf"{re.escape(label)}\s*[:：]?\s*([^\n]+)")
-    m = pattern.search(text)
-    candidates: list[str] = []
-    if m:
-        chunk = m.group(1).strip()
-        parts = re.split(r"[、,,；;|/\s]+", chunk)
-        candidates.extend([p for p in parts if p and not p.isdigit() and "%" not in p])
-    if not candidates:
-        json_val = _search_xhr(xhr, label)
-        if isinstance(json_val, list):
-            candidates = [str(v) for v in json_val]
-        elif isinstance(json_val, str):
-            candidates = [v.strip() for v in re.split(r"[、,,;|/\s]+", json_val) if v.strip()]
-    seen = set()
-    out: list[str] = []
-    for c in candidates:
-        if c not in seen:
-            seen.add(c)
-            out.append(c)
     return out
 
 
-def _first_number(chunk: str) -> Optional[float]:
-    m = _NUMBER_RE.search(chunk)
-    if not m:
-        return None
-    s = m.group(0).replace(",", "")
-    try:
-        f = float(s)
-    except ValueError:
-        return None
-    chunk_lower = chunk.lower()
-    if "万" in chunk:
-        f *= 10000
-    elif "亿" in chunk:
-        f *= 100000000
-    elif "k" in chunk_lower and "%" not in chunk:
-        f *= 1000
-    return f
-
-
-_DURATION_RE = re.compile(
-    r"(?:(\d+)\s*小时)?\s*(?:(\d+)\s*分(?:钟)?)?\s*(?:(\d+)\s*秒)?"
-)
-
-
-def _parse_duration(chunk: str) -> Optional[float]:
-    chunk = chunk.strip()
-    if not chunk:
-        return None
-    m = _DURATION_RE.search(chunk)
-    if m and any(m.groups()):
-        h = int(m.group(1) or 0)
-        mi = int(m.group(2) or 0)
-        s = int(m.group(3) or 0)
-        total = h * 3600 + mi * 60 + s
-        if total > 0:
-            return total / 60.0
-    if ":" in chunk:
-        parts = chunk.split(":")[:3]
-        try:
-            nums = [int(p) for p in parts]
-        except ValueError:
-            nums = []
-        if nums:
-            while len(nums) < 3:
-                nums.insert(0, 0)
-            h, mi, s = nums
-            return (h * 3600 + mi * 60 + s) / 60.0
-    return _first_number(chunk)
-
-
-def _search_xhr(xhr: list[dict[str, Any]], label: str) -> Any:
-    for entry in xhr:
-        found = _walk(entry.get("body"), label)
-        if found is not None:
-            return found
-    return None
-
-
-def _walk(node: Any, label: str) -> Any:
-    if isinstance(node, dict):
-        for k, v in node.items():
-            if isinstance(k, str) and label in k:
-                return v
-            found = _walk(v, label)
-            if found is not None:
-                return found
-    elif isinstance(node, list):
-        for item in node:
-            found = _walk(item, label)
-            if found is not None:
-                return found
-    return None
+def _top_labels(dist: dict, mapping: dict[str, str]) -> list[str]:
+    pairs = sorted(
+        ((k, float(v)) for k, v in dist.items() if isinstance(v, (int, float))),
+        key=lambda kv: kv[1],
+        reverse=True,
+    )
+    above = [(k, v) for k, v in pairs if v >= DISTRIBUTION_THRESHOLD]
+    if not above and pairs:
+        above = pairs[:1]
+    return [mapping.get(k, k) for k, _ in above]
