@@ -12,6 +12,11 @@ from app.config import FieldSpec, get_settings
 
 LOGGER = logging.getLogger(__name__)
 
+VIEWPORT = {"width": 1440, "height": 900}
+READY_SELECTOR = "text=订阅数"
+NAV_TIMEOUT_MS = 60000
+READY_TIMEOUT_MS = 15000
+
 
 @dataclass
 class ScrapeResult:
@@ -28,36 +33,29 @@ class LoginRequired(Exception):
 
 
 async def scrape(url: str, *, debug: bool = False) -> ScrapeResult:
-    s = get_settings()
     state = load_state()
     if not state:
         raise LoginRequired("尚未保存 zhuiguang.xyz 登录态，请先在管理员页面完成登录")
 
-    specs = s.field_specs()
+    specs = get_settings().field_specs()
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True, args=["--no-sandbox"])
-        context = await browser.new_context(
-            storage_state=state,
-            viewport={"width": s.screen_width, "height": s.screen_height},
-        )
+        context = await browser.new_context(storage_state=state, viewport=VIEWPORT)
         page = await context.new_page()
         xhr: list[dict[str, Any]] = []
         page.on("response", lambda resp: _maybe_capture(resp, xhr))
 
-        await page.goto(url, wait_until="networkidle", timeout=s.scrape_nav_timeout_ms)
+        await page.goto(url, wait_until="networkidle", timeout=NAV_TIMEOUT_MS)
 
         if _looks_like_login_page(page.url):
             await browser.close()
             raise LoginRequired("zhuiguang.xyz 登录态已失效，请重新登录")
 
-        if s.scrape_ready_selector:
-            try:
-                await page.wait_for_selector(
-                    s.scrape_ready_selector, timeout=s.scrape_ready_timeout_ms
-                )
-            except Exception:
-                pass
+        try:
+            await page.wait_for_selector(READY_SELECTOR, timeout=READY_TIMEOUT_MS)
+        except Exception:
+            pass
 
         page_text = await page.evaluate("() => document.body.innerText")
         result = ScrapeResult(url=url, page_text=page_text, raw_xhr=xhr)
@@ -169,14 +167,14 @@ def _extract_multi(text: str, xhr: list[dict[str, Any]], label: str) -> list[str
     candidates: list[str] = []
     if m:
         chunk = m.group(1).strip()
-        parts = re.split(r"[、,，；;|/\s]+", chunk)
+        parts = re.split(r"[、,,；;|/\s]+", chunk)
         candidates.extend([p for p in parts if p and not p.isdigit() and "%" not in p])
     if not candidates:
         json_val = _search_xhr(xhr, label)
         if isinstance(json_val, list):
             candidates = [str(v) for v in json_val]
         elif isinstance(json_val, str):
-            candidates = [v.strip() for v in re.split(r"[、,，;|/\s]+", json_val) if v.strip()]
+            candidates = [v.strip() for v in re.split(r"[、,,;|/\s]+", json_val) if v.strip()]
     seen = set()
     out: list[str] = []
     for c in candidates:

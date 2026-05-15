@@ -7,6 +7,9 @@ import httpx
 
 from app.config import FieldSpec, get_settings
 
+OPEN_API_BASE = "https://open.feishu.cn/open-apis"
+PAGE_SIZE = 200
+
 
 class FeishuClient:
     def __init__(self) -> None:
@@ -15,8 +18,6 @@ class FeishuClient:
         self._app_secret = s.feishu_app_secret
         self._app_token = s.feishu_app_token
         self._table_id = s.feishu_table_id
-        self._base = s.feishu_open_api_base.rstrip("/")
-        self._page_size = s.feishu_page_size
         self._specs = s.field_specs()
         self._token: Optional[str] = None
         self._token_expire_at: float = 0.0
@@ -26,7 +27,7 @@ class FeishuClient:
         if self._token and time.time() < self._token_expire_at - 60:
             return self._token
         r = self._http.post(
-            f"{self._base}/auth/v3/tenant_access_token/internal",
+            f"{OPEN_API_BASE}/auth/v3/tenant_access_token/internal",
             json={"app_id": self._app_id, "app_secret": self._app_secret},
         )
         r.raise_for_status()
@@ -42,7 +43,7 @@ class FeishuClient:
 
     def get_record(self, record_id: str) -> dict:
         url = (
-            f"{self._base}/bitable/v1/apps/{self._app_token}"
+            f"{OPEN_API_BASE}/bitable/v1/apps/{self._app_token}"
             f"/tables/{self._table_id}/records/{record_id}"
         )
         r = self._http.get(url, headers=self._auth_headers())
@@ -54,13 +55,13 @@ class FeishuClient:
 
     def list_records(self) -> list[dict]:
         url = (
-            f"{self._base}/bitable/v1/apps/{self._app_token}"
+            f"{OPEN_API_BASE}/bitable/v1/apps/{self._app_token}"
             f"/tables/{self._table_id}/records"
         )
         items: list[dict] = []
         page_token: Optional[str] = None
         while True:
-            params: dict[str, Any] = {"page_size": self._page_size}
+            params: dict[str, Any] = {"page_size": PAGE_SIZE}
             if page_token:
                 params["page_token"] = page_token
             r = self._http.get(url, headers=self._auth_headers(), params=params)
@@ -79,7 +80,7 @@ class FeishuClient:
 
     def update_record(self, record_id: str, fields: dict[str, Any]) -> dict:
         url = (
-            f"{self._base}/bitable/v1/apps/{self._app_token}"
+            f"{OPEN_API_BASE}/bitable/v1/apps/{self._app_token}"
             f"/tables/{self._table_id}/records/{record_id}"
         )
         r = self._http.put(

@@ -65,17 +65,10 @@
 >   "https://<域名>/admin/upload-state?token=<ADMIN_TOKEN>"
 > ```
 
-## 批量刷新（避免一个个按按钮）
+## 批量 / 定时刷新
 
-服务内置了"扫整表"的能力，三种触发方式都能用，选你顺手的：
-
-### 1) 服务内置定时任务（默认开启）
-启动后每天 UTC 20:00（北京 04:00）会自动跑一次 `scan_all`，把全表所有行都刷一遍。环境变量控制：
-- `ENABLE_DAILY_SCAN=1`（设 0 可以关）
-- `DAILY_SCAN_HOUR_UTC=20`（改成别的小时，0~23）
-
-### 2) 飞书侧加一个"全表刷新"按钮
-在飞书表格里随便挑一行（或者新建一个"控制面板"行）放个按钮：
+### 1) 飞书"全表刷新"按钮（推荐）
+在飞书表格里随便挑一行放个按钮：
 - 自动化流程 → 发送 HTTP 请求 → URL 还是 `https://<域名>/feishu/trigger`
 - Body 改成：
   ```json
@@ -83,27 +76,22 @@
   ```
 - 服务收到后会异步跑全表，立刻返回 `{"accepted": true, "mode": "scan_all"}`。
 
-### 3) 直接打 API
+### 2) 定时跑（飞书自动化的定时触发器）
+飞书自动化流程的触发器换成 **"按指定时间触发"**（每天/每周/每小时都行），动作仍是发送 HTTP 请求到 `/feishu/trigger`，body 还是 `{ "scan_all": true }`。
+服务自己**不内置 cron**，定时这件事完全交给飞书排期，没有重复机制。
+
+### 3) 直接打 API（运维用）
 ```bash
-# 异步触发，立即返回
-curl -X POST "https://<域名>/admin/scan-all?token=<ADMIN_TOKEN>"
-
-# 同步等完（小表用，大表会超时）
-curl -X POST "https://<域名>/admin/scan-all?token=<ADMIN_TOKEN>&wait=true"
-
-# 查进度
-curl "https://<域名>/admin/scan-status?token=<ADMIN_TOKEN>"
-```
-返回类似：
-```json
-{ "state": "running", "total": 100, "done": 37, "ok": 35, "skipped": 1, "errors": 1, ... }
+curl -X POST "https://<域名>/admin/scan-all?token=<ADMIN_TOKEN>"               # 异步
+curl -X POST "https://<域名>/admin/scan-all?token=<ADMIN_TOKEN>&wait=true"     # 同步等完
+curl "https://<域名>/admin/scan-status?token=<ADMIN_TOKEN>"                    # 看进度
 ```
 
-行内单点按钮仍然有用：只刷某一行的话比扫全表更省时间。两套并存，谁顺手用谁。
+行内单点按钮仍然有用：只刷某一行的话比扫全表更省时间。
 
-## 所有可调参数（Railway → Variables 改即可，不用动代码）
+## 可调参数（Railway → Variables）
 
-按用途分组。完整带注释的清单见 [`.env.example`](./.env.example)。
+只暴露真正"业务可变"的，技术细节都在代码里。完整清单见 [`.env.example`](./.env.example)。
 
 ### 必填（没默认值）
 | 变量 | 说明 |
@@ -114,44 +102,17 @@ curl "https://<域名>/admin/scan-status?token=<ADMIN_TOKEN>"
 | `ADMIN_TOKEN` | 保护 /admin/* 的密钥（自己生成） |
 | `FERNET_KEY` | 加密登录态用的密钥（用 `Fernet.generate_key()` 生成） |
 
-### 飞书表字段名（默认对应当前页面 / 表头，改名时同步改）
+### 飞书表列名（默认对应当前表头，改飞书列名时同步改）
 `FEISHU_LINK_FIELD`、`FIELD_SUBSCRIBERS`、`FIELD_AVG_LISTEN`、`FIELD_AVG_DURATION`、`FIELD_AVG_PLAY`、`FIELD_AVG_COMMENTS`、`FIELD_FEMALE_RATIO`、`FIELD_AGE_DISTRIBUTION`、`FIELD_LOCATION_DISTRIBUTION`、`FIELD_IPHONE_RATIO`
 
-> 改飞书列名 → 这里跟着改，**但前提是 zhuiguang 页面上的中文标签也一致**（默认就是同一份中文）。如果某天页面标签和你的列名不一致，需要在代码里加 label 覆盖。
-
-### 飞书 API
+### 持久化
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `FEISHU_OPEN_API_BASE` | `https://open.feishu.cn/open-apis` | 国际版 Lark 改 `https://open.larksuite.com/open-apis` |
-| `FEISHU_PAGE_SIZE` | `200` | scan_all 拉记录的分页大小 |
-
-### 抓取行为（zhuiguang 改版的话基本就调这一组）
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `ZHUIGUANG_LOGIN_URL` | `https://zhuiguang.xyz/` | 登录流程打开的页面 |
-| `LOGIN_SUCCESS_URL_HINTS` | `/advertiser,/dashboard,/home` | URL 含任一即视为登录成功 |
-| `SESSION_COOKIE_HINTS` | `session,token,auth,sid,passport,user` | cookie 名含任一即视为登录态 cookie |
-| `SCRAPE_READY_SELECTOR` | `text=订阅数` | 抓取时等这个元素出现再解析；为空跳过 |
-| `SCRAPE_NAV_TIMEOUT_MS` | `60000` | 页面加载超时 |
-| `SCRAPE_READY_TIMEOUT_MS` | `15000` | 等 selector 超时 |
-| `SCREEN_WIDTH` / `SCREEN_HEIGHT` | `1440` / `900` | Xvfb 屏幕 + Playwright viewport（同步） |
-
-### 调度
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `ENABLE_DAILY_SCAN` | `1` | 0 关闭内置每日定时全表刷新 |
-| `DAILY_SCAN_HOUR_UTC` | `20` | UTC 几点跑（北京 = +8 小时） |
-| `SCAN_DELAY_SECONDS` | `1.0` | scan_all 每行之间的间隔（避免被限速） |
-
-### 持久化 / 容器内部（一般不用动）
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `STATE_DIR` | `/data` | Volume 挂载点 |
-| `DISPLAY` | `:99` | Xvfb display |
-| `NOVNC_PORT` | `6080` | 容器内 noVNC 端口 |
-| `PORT` | Railway 注入 | 对外暴露端口 |
+| `STATE_DIR` | `/data` | Volume 挂载点（本地开发改成 `./data`） |
 
 > 改了任何 Variables，Railway 会自动重启服务；几十秒后新值生效。
+>
+> 抓取超时、屏幕分辨率、登录判定 URL、ready selector 这些纯实现细节都不在 env 里——它们跟飞书表无关，要调就改代码（`app/scraper.py`、`app/login_session.py`）然后重新部署。
 
 ## 调试
 
@@ -186,5 +147,5 @@ uvicorn app.main:app --reload --port 8000
 - zhuiguang.xyz 页面结构若改版，需调整 `app/scraper.py` 的正则/选择器。
 - 单实例服务，并发抓取会被 Playwright 串行化（高并发时可加队列）。
 - noVNC 仅在登录时使用，非登录时 headed Chrome 不会驻留，资源占用很低。
-- 内置的 daily scan 是单实例 asyncio 调度，服务重启会重新等下一个时刻；不要求精确，只要每天至少能跑一次即可。
+- 定时刷新完全交给飞书自动化的"按时间触发"，服务自身不跑 cron。
 - Railway Volume 不会随服务重启丢失，但**销毁服务/项目时会一起销毁**，记得迁移前先备份 `/data` 里的文件。

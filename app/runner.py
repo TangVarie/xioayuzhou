@@ -101,12 +101,13 @@ async def _log(
         LOGGER.warning("write log file failed: %s", exc)
 
 
+SCAN_DELAY_SECONDS = 1.0
+
+
 async def run_scan_all(*, delay_seconds: Optional[float] = None) -> dict:
     if _scan_lock.locked():
         return {"status": "already_running", **scan_status()}
-    delay = (
-        delay_seconds if delay_seconds is not None else get_settings().scan_delay_seconds
-    )
+    delay = delay_seconds if delay_seconds is not None else SCAN_DELAY_SECONDS
 
     async with _scan_lock:
         _scan_status.update(

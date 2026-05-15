@@ -12,6 +12,10 @@ from app.config import get_settings
 
 LOGGER = logging.getLogger(__name__)
 
+LOGIN_URL = "https://zhuiguang.xyz/"
+SUCCESS_URL_HINTS = ("/advertiser", "/dashboard", "/home")
+SESSION_COOKIE_HINTS = ("session", "token", "auth", "sid", "passport", "user")
+
 
 @dataclass
 class LoginSession:
@@ -57,9 +61,6 @@ async def start() -> dict:
             return {"state": _status.get("state"), "message": "登录会话已在进行中"}
 
         s = get_settings()
-        success_hints = s.login_success_hints_list()
-        cookie_hints = s.session_cookie_hints_list()
-
         pw = await async_playwright().start()
         browser = await pw.chromium.launch(
             headless=False,
@@ -73,11 +74,9 @@ async def start() -> dict:
         )
         context = await browser.new_context(viewport=None)
         page = await context.new_page()
-        await page.goto(s.zhuiguang_login_url, wait_until="domcontentloaded")
+        await page.goto(LOGIN_URL, wait_until="domcontentloaded")
 
-        _status.update(
-            {"state": "waiting", "message": f"请在 noVNC 窗口里登录 {s.zhuiguang_login_url}"}
-        )
+        _status.update({"state": "waiting", "message": "请在 noVNC 窗口里登录 zhuiguang.xyz"})
 
         async def _watcher():
             try:
@@ -87,14 +86,12 @@ async def start() -> dict:
                         url = page.url
                     except Exception:
                         url = ""
-                    if success_hints and any(hint in url for hint in success_hints):
+                    if any(hint in url for hint in SUCCESS_URL_HINTS):
                         cookies = await context.cookies()
-                        if any(_looks_like_session(c, cookie_hints) for c in cookies):
+                        if any(_looks_like_session(c) for c in cookies):
                             state = await context.storage_state()
                             save_state(state)
-                            _status.update(
-                                {"state": "saved", "message": "登录态已保存到 Volume"}
-                            )
+                            _status.update({"state": "saved", "message": "登录态已保存到 Volume"})
                             break
             except asyncio.CancelledError:
                 _status.update({"state": "cancelled", "message": "登录会话已取消"})
@@ -121,8 +118,6 @@ async def stop() -> dict:
         return {"state": _status.get("state"), "message": _status.get("message")}
 
 
-def _looks_like_session(cookie: dict, hints: list[str]) -> bool:
-    if not hints:
-        return True
+def _looks_like_session(cookie: dict) -> bool:
     name = (cookie.get("name") or "").lower()
-    return any(h in name for h in hints)
+    return any(h in name for h in SESSION_COOKIE_HINTS)

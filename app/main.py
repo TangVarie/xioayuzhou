@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from typing import Optional
@@ -8,32 +7,13 @@ from typing import Optional
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from app import auth, login_session, scheduler
+from app import auth, login_session
 from app.config import get_settings
 from app.runner import run_for_record, run_scan_all, scan_status, tail_log
 from app.scraper import LoginRequired, scrape
 
 LOGGER = logging.getLogger("uvicorn.error")
 app = FastAPI(title="xiaoyuzhou-zhuiguang-sync")
-
-_scheduler_tasks: list[asyncio.Task] = []
-
-
-@app.on_event("startup")
-async def _on_startup() -> None:
-    global _scheduler_tasks
-    _scheduler_tasks = await scheduler.start()
-
-
-@app.on_event("shutdown")
-async def _on_shutdown() -> None:
-    for task in _scheduler_tasks:
-        task.cancel()
-    for task in _scheduler_tasks:
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
 
 
 @app.get("/healthz")
