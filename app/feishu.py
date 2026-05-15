@@ -5,21 +5,7 @@ from typing import Any, Optional
 
 import httpx
 
-from app.config import get_settings
-
-OPEN_API = "https://open.feishu.cn/open-apis"
-
-FIELD_TYPES = {
-    "订阅数": "number",
-    "平均收听量": "number",
-    "平均节目时长": "number",
-    "平均播放时长": "number",
-    "平均评论数": "number",
-    "订阅用户女性占比": "progress",
-    "订阅用户主要年龄分布": "multi_select",
-    "用户主要地域分布": "multi_select",
-    "订阅用户设备iphone占比": "progress",
-}
+from app.config import FieldSpec, get_settings
 
 
 class FeishuClient:
@@ -29,6 +15,9 @@ class FeishuClient:
         self._app_secret = s.feishu_app_secret
         self._app_token = s.feishu_app_token
         self._table_id = s.feishu_table_id
+        self._base = s.feishu_open_api_base.rstrip("/")
+        self._page_size = s.feishu_page_size
+        self._specs = s.field_specs()
         self._token: Optional[str] = None
         self._token_expire_at: float = 0.0
         self._http = httpx.Client(timeout=20.0)
@@ -37,7 +26,7 @@ class FeishuClient:
         if self._token and time.time() < self._token_expire_at - 60:
             return self._token
         r = self._http.post(
-            f"{OPEN_API}/auth/v3/tenant_access_token/internal",
+            f"{self._base}/auth/v3/tenant_access_token/internal",
             json={"app_id": self._app_id, "app_secret": self._app_secret},
         )
         r.raise_for_status()
@@ -53,7 +42,7 @@ class FeishuClient:
 
     def get_record(self, record_id: str) -> dict:
         url = (
-            f"{OPEN_API}/bitable/v1/apps/{self._app_token}"
+            f"{self._base}/bitable/v1/apps/{self._app_token}"
             f"/tables/{self._table_id}/records/{record_id}"
         )
         r = self._http.get(url, headers=self._auth_headers())
@@ -63,15 +52,15 @@ class FeishuClient:
             raise RuntimeError(f"读取记录失败: {data}")
         return data["data"]["record"]
 
-    def list_records(self, *, page_size: int = 200) -> list[dict]:
+    def list_records(self) -> list[dict]:
         url = (
-            f"{OPEN_API}/bitable/v1/apps/{self._app_token}"
+            f"{self._base}/bitable/v1/apps/{self._app_token}"
             f"/tables/{self._table_id}/records"
         )
         items: list[dict] = []
         page_token: Optional[str] = None
         while True:
-            params: dict[str, Any] = {"page_size": page_size}
+            params: dict[str, Any] = {"page_size": self._page_size}
             if page_token:
                 params["page_token"] = page_token
             r = self._http.get(url, headers=self._auth_headers(), params=params)
@@ -90,13 +79,13 @@ class FeishuClient:
 
     def update_record(self, record_id: str, fields: dict[str, Any]) -> dict:
         url = (
-            f"{OPEN_API}/bitable/v1/apps/{self._app_token}"
+            f"{self._base}/bitable/v1/apps/{self._app_token}"
             f"/tables/{self._table_id}/records/{record_id}"
         )
         r = self._http.put(
             url,
             headers=self._auth_headers(),
-            json={"fields": _normalize_fields(fields)},
+            json={"fields": _normalize_fields(fields, self._specs)},
         )
         r.raise_for_status()
         data = r.json()
@@ -105,16 +94,23 @@ class FeishuClient:
         return data["data"]["record"]
 
 
-def _normalize_fields(fields: dict[str, Any]) -> dict[str, Any]:
+def _normalize_fields(fields: dict[str, Any], specs: list[FieldSpec]) -> dict[str, Any]:
+    kind_by_name = {spec.name: spec.kind for spec in specs}
     out: dict[str, Any] = {}
     for name, value in fields.items():
         if value is None:
             continue
-        kind = FIELD_TYPES.get(name)
-        if kind == "number":
-            out[name] = float(value)
+        kind = kind_by_name.get(name)
+        if kind in ("number", "duration"):
+            try:
+                out[name] = float(value)
+            except (TypeError, ValueError):
+                continue
         elif kind == "progress":
-            v = float(value)
+            try:
+                v = float(value)
+            except (TypeError, ValueError):
+                continue
             if v > 1.0:
                 v = v / 100.0
             out[name] = max(0.0, min(1.0, v))

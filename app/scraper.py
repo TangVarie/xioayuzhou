@@ -1,32 +1,16 @@
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from playwright.async_api import Page, async_playwright
+from playwright.async_api import async_playwright
 
 from app.auth import load_state, save_state
+from app.config import FieldSpec, get_settings
 
 LOGGER = logging.getLogger(__name__)
-
-FIELDS = [
-    "订阅数",
-    "平均收听量",
-    "平均节目时长",
-    "平均播放时长",
-    "平均评论数",
-    "订阅用户女性占比",
-    "订阅用户主要年龄分布",
-    "用户主要地域分布",
-    "订阅用户设备iphone占比",
-]
-
-PROGRESS_FIELDS = {"订阅用户女性占比", "订阅用户设备iphone占比"}
-MULTI_SELECT_FIELDS = {"订阅用户主要年龄分布", "用户主要地域分布"}
-DURATION_FIELDS = {"平均节目时长", "平均播放时长"}
 
 
 @dataclass
@@ -39,33 +23,48 @@ class ScrapeResult:
     missing: list[str] = field(default_factory=list)
 
 
+class LoginRequired(Exception):
+    pass
+
+
 async def scrape(url: str, *, debug: bool = False) -> ScrapeResult:
+    s = get_settings()
     state = load_state()
     if not state:
         raise LoginRequired("尚未保存 zhuiguang.xyz 登录态，请先在管理员页面完成登录")
 
+    specs = s.field_specs()
+
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True, args=["--no-sandbox"])
-        context = await browser.new_context(storage_state=state, viewport={"width": 1440, "height": 900})
+        context = await browser.new_context(
+            storage_state=state,
+            viewport={"width": s.screen_width, "height": s.screen_height},
+        )
         page = await context.new_page()
         xhr: list[dict[str, Any]] = []
         page.on("response", lambda resp: _maybe_capture(resp, xhr))
 
-        await page.goto(url, wait_until="networkidle", timeout=60000)
+        await page.goto(url, wait_until="networkidle", timeout=s.scrape_nav_timeout_ms)
 
         if _looks_like_login_page(page.url):
             await browser.close()
             raise LoginRequired("zhuiguang.xyz 登录态已失效，请重新登录")
 
-        try:
-            await page.wait_for_selector("text=订阅数", timeout=15000)
-        except Exception:
-            pass
+        if s.scrape_ready_selector:
+            try:
+                await page.wait_for_selector(
+                    s.scrape_ready_selector, timeout=s.scrape_ready_timeout_ms
+                )
+            except Exception:
+                pass
 
         page_text = await page.evaluate("() => document.body.innerText")
         result = ScrapeResult(url=url, page_text=page_text, raw_xhr=xhr)
-        result.fields = _extract_fields(page_text, xhr)
-        result.missing = [name for name in FIELDS if result.fields.get(name) in (None, "", [])]
+        result.fields = _extract_fields(page_text, xhr, specs)
+        result.missing = [
+            spec.name for spec in specs if result.fields.get(spec.name) in (None, "", [])
+        ]
 
         if debug:
             shot = "/tmp/zhuiguang_debug.png"
@@ -76,10 +75,6 @@ async def scrape(url: str, *, debug: bool = False) -> ScrapeResult:
         save_state(state_after)
         await browser.close()
         return result
-
-
-class LoginRequired(Exception):
-    pass
 
 
 def _looks_like_login_page(current_url: str) -> bool:
@@ -114,23 +109,27 @@ _NUMBER_RE = re.compile(r"-?\d+(?:[.,]\d+)*")
 _PERCENT_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*%")
 
 
-def _extract_fields(text: str, xhr: list[dict[str, Any]]) -> dict[str, Any]:
+def _extract_fields(
+    text: str, xhr: list[dict[str, Any]], specs: list[FieldSpec]
+) -> dict[str, Any]:
     fields: dict[str, Any] = {}
     text_norm = _normalize_text(text)
 
-    for name in FIELDS:
-        if name in PROGRESS_FIELDS:
-            fields[name] = _extract_percent(text_norm, name)
-        elif name in MULTI_SELECT_FIELDS:
-            fields[name] = _extract_multi(text_norm, xhr, name)
+    for spec in specs:
+        if spec.kind == "progress":
+            fields[spec.name] = _extract_percent(text_norm, spec.name)
+        elif spec.kind == "multi_select":
+            fields[spec.name] = _extract_multi(text_norm, xhr, spec.name)
+        elif spec.kind == "duration":
+            fields[spec.name] = _extract_number(text_norm, spec.name, is_duration=True)
         else:
-            fields[name] = _extract_number(text_norm, name, is_duration=name in DURATION_FIELDS)
+            fields[spec.name] = _extract_number(text_norm, spec.name, is_duration=False)
 
-    for name, val in list(fields.items()):
-        if val in (None, "", []):
-            json_val = _search_xhr(xhr, name)
+    for spec in specs:
+        if fields.get(spec.name) in (None, "", []):
+            json_val = _search_xhr(xhr, spec.name)
             if json_val is not None:
-                fields[name] = json_val
+                fields[spec.name] = json_val
     return fields
 
 
@@ -139,23 +138,18 @@ def _normalize_text(text: str) -> str:
 
 
 def _extract_number(text: str, label: str, *, is_duration: bool) -> Optional[float]:
-    pattern = re.compile(
-        rf"{re.escape(label)}\s*[:：]?\s*([^\n]*)",
-    )
+    pattern = re.compile(rf"{re.escape(label)}\s*[:：]?\s*([^\n]*)")
     m = pattern.search(text)
     if not m:
         return None
     chunk = m.group(1).strip()
     if is_duration:
         return _parse_duration(chunk)
-    num = _first_number(chunk)
-    return num
+    return _first_number(chunk)
 
 
 def _extract_percent(text: str, label: str) -> Optional[float]:
-    pattern = re.compile(
-        rf"{re.escape(label)}\s*[:：]?\s*([^\n]*)",
-    )
+    pattern = re.compile(rf"{re.escape(label)}\s*[:：]?\s*([^\n]*)")
     m = pattern.search(text)
     if not m:
         return None

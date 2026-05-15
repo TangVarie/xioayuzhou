@@ -101,6 +101,58 @@ curl "https://<域名>/admin/scan-status?token=<ADMIN_TOKEN>"
 
 行内单点按钮仍然有用：只刷某一行的话比扫全表更省时间。两套并存，谁顺手用谁。
 
+## 所有可调参数（Railway → Variables 改即可，不用动代码）
+
+按用途分组。完整带注释的清单见 [`.env.example`](./.env.example)。
+
+### 必填（没默认值）
+| 变量 | 说明 |
+|---|---|
+| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 飞书自建应用凭证 |
+| `FEISHU_APP_TOKEN` / `FEISHU_TABLE_ID` | 目标多维表 |
+| `FEISHU_WEBHOOK_SECRET` | 飞书 webhook 校验密钥（自己生成） |
+| `ADMIN_TOKEN` | 保护 /admin/* 的密钥（自己生成） |
+| `FERNET_KEY` | 加密登录态用的密钥（用 `Fernet.generate_key()` 生成） |
+
+### 飞书表字段名（默认对应当前页面 / 表头，改名时同步改）
+`FEISHU_LINK_FIELD`、`FIELD_SUBSCRIBERS`、`FIELD_AVG_LISTEN`、`FIELD_AVG_DURATION`、`FIELD_AVG_PLAY`、`FIELD_AVG_COMMENTS`、`FIELD_FEMALE_RATIO`、`FIELD_AGE_DISTRIBUTION`、`FIELD_LOCATION_DISTRIBUTION`、`FIELD_IPHONE_RATIO`
+
+> 改飞书列名 → 这里跟着改，**但前提是 zhuiguang 页面上的中文标签也一致**（默认就是同一份中文）。如果某天页面标签和你的列名不一致，需要在代码里加 label 覆盖。
+
+### 飞书 API
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `FEISHU_OPEN_API_BASE` | `https://open.feishu.cn/open-apis` | 国际版 Lark 改 `https://open.larksuite.com/open-apis` |
+| `FEISHU_PAGE_SIZE` | `200` | scan_all 拉记录的分页大小 |
+
+### 抓取行为（zhuiguang 改版的话基本就调这一组）
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `ZHUIGUANG_LOGIN_URL` | `https://zhuiguang.xyz/` | 登录流程打开的页面 |
+| `LOGIN_SUCCESS_URL_HINTS` | `/advertiser,/dashboard,/home` | URL 含任一即视为登录成功 |
+| `SESSION_COOKIE_HINTS` | `session,token,auth,sid,passport,user` | cookie 名含任一即视为登录态 cookie |
+| `SCRAPE_READY_SELECTOR` | `text=订阅数` | 抓取时等这个元素出现再解析；为空跳过 |
+| `SCRAPE_NAV_TIMEOUT_MS` | `60000` | 页面加载超时 |
+| `SCRAPE_READY_TIMEOUT_MS` | `15000` | 等 selector 超时 |
+| `SCREEN_WIDTH` / `SCREEN_HEIGHT` | `1440` / `900` | Xvfb 屏幕 + Playwright viewport（同步） |
+
+### 调度
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `ENABLE_DAILY_SCAN` | `1` | 0 关闭内置每日定时全表刷新 |
+| `DAILY_SCAN_HOUR_UTC` | `20` | UTC 几点跑（北京 = +8 小时） |
+| `SCAN_DELAY_SECONDS` | `1.0` | scan_all 每行之间的间隔（避免被限速） |
+
+### 持久化 / 容器内部（一般不用动）
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `STATE_DIR` | `/data` | Volume 挂载点 |
+| `DISPLAY` | `:99` | Xvfb display |
+| `NOVNC_PORT` | `6080` | 容器内 noVNC 端口 |
+| `PORT` | Railway 注入 | 对外暴露端口 |
+
+> 改了任何 Variables，Railway 会自动重启服务；几十秒后新值生效。
+
 ## 调试
 
 - `GET /healthz` — 健康检查，会返回是否已有登录态。

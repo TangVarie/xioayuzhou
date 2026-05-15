@@ -2,28 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import datetime, time, timedelta, timezone
 
+from app.config import get_settings
 from app.runner import run_scan_all
 
 LOGGER = logging.getLogger(__name__)
 
-DAILY_SCAN_HOUR_UTC = int(os.getenv("DAILY_SCAN_HOUR_UTC", "20"))  # UTC 20:00 = 北京 04:00
-ENABLE_DAILY_SCAN = os.getenv("ENABLE_DAILY_SCAN", "1") not in ("0", "false", "False", "")
-
 
 async def start() -> list[asyncio.Task]:
+    s = get_settings()
     tasks: list[asyncio.Task] = []
-    if ENABLE_DAILY_SCAN:
+    if s.enable_daily_scan:
         tasks.append(asyncio.create_task(_daily_scan_loop(), name="daily_scan"))
     return tasks
 
 
 async def _daily_scan_loop() -> None:
     while True:
-        delay = _seconds_until_next(DAILY_SCAN_HOUR_UTC)
-        LOGGER.info("daily scan scheduled in %.0fs", delay)
+        hour = get_settings().daily_scan_hour_utc
+        delay = _seconds_until_next(hour)
+        LOGGER.info("daily scan scheduled in %.0fs (UTC %02d:00)", delay, hour)
         await asyncio.sleep(delay)
         try:
             await run_scan_all()
