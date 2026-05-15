@@ -143,6 +143,7 @@ async def admin_upload_state(
 
 
 @app.post("/admin/clear-state")
+@app.get("/admin/clear-state")
 async def admin_clear_state(token: Optional[str] = Query(default=None)) -> dict:
     _require_admin(token)
     auth.clear_state()
@@ -180,6 +181,7 @@ async def admin_debug(
 
 
 @app.post("/admin/run")
+@app.get("/admin/run")
 async def admin_run(
     token: Optional[str] = Query(default=None),
     record_id: str = Query(...),
@@ -189,6 +191,7 @@ async def admin_run(
 
 
 @app.post("/admin/scan-all")
+@app.get("/admin/scan-all")
 async def admin_scan_all(
     background: BackgroundTasks,
     token: Optional[str] = Query(default=None),
