@@ -15,7 +15,7 @@ LOGGER = logging.getLogger(__name__)
 
 VIEWPORT = {"width": 1440, "height": 900}
 NAV_TIMEOUT_MS = 60000
-DISTRIBUTION_THRESHOLD = 0.10  # 多选字段：分布占比 >= 10% 算"主要"
+TOP_N = 2  # 多选字段：取占比前 N 名
 
 PID_RE = re.compile(r"/podcast/([0-9a-fA-F]+)")
 
@@ -197,7 +197,4 @@ def _top_labels(dist: dict, mapping: dict[str, str]) -> list[str]:
         key=lambda kv: kv[1],
         reverse=True,
     )
-    above = [(k, v) for k, v in pairs if v >= DISTRIBUTION_THRESHOLD]
-    if not above and pairs:
-        above = pairs[:1]
-    return [mapping.get(k, k) for k, _ in above]
+    return [mapping.get(k, k) for k, _ in pairs[:TOP_N]]
