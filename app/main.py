@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request, UploadFile, File
@@ -225,20 +226,33 @@ def _require_admin(token: Optional[str]) -> None:
         raise HTTPException(status_code=401, detail="invalid admin token")
 
 
+_RECORD_ID_RE = re.compile(r"rec[a-zA-Z0-9]{6,}")
+
+
 def _extract_record_id(payload: dict) -> Optional[str]:
     if not isinstance(payload, dict):
         return None
+    raw: Optional[str] = None
     for key in ("record_id", "recordId", "id"):
         v = payload.get(key)
         if isinstance(v, str) and v:
-            return v
-    record = payload.get("record")
-    if isinstance(record, dict):
-        for key in ("record_id", "id"):
-            v = record.get(key)
-            if isinstance(v, str) and v:
-                return v
-    return None
+            raw = v
+            break
+    if raw is None:
+        record = payload.get("record")
+        if isinstance(record, dict):
+            for key in ("record_id", "id"):
+                v = record.get(key)
+                if isinstance(v, str) and v:
+                    raw = v
+                    break
+    if raw is None:
+        return None
+    # 兜底：飞书 Body 占位有残留时，从字符串里捞出 rec... 子串
+    m = _RECORD_ID_RE.search(raw)
+    if m:
+        return m.group(0)
+    return raw
 
 
 def _is_scan_all_payload(payload: dict) -> bool:
