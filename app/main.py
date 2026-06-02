@@ -82,17 +82,21 @@ async def admin_login_page(token: Optional[str] = Query(default=None)) -> HTMLRe
     <span id="status">就绪</span>
     <span style="margin-left:auto">登录成功后，状态会变为 <code>saved</code>，可直接关闭页面</span>
   </div>
-  <iframe src="/novnc/vnc_lite.html?autoconnect=1&resize=remote&path=websockify" id="vnc"></iframe>
+  <iframe src="about:blank" id="vnc"></iframe>
   <script>
     const token = new URLSearchParams(location.search).get('token') || '';
+    const VNC_URL = '/novnc/vnc_lite.html?autoconnect=1&resize=remote&path=websockify';
     async function start() {{
+      document.getElementById('status').innerText = '正在启动虚拟桌面…';
       const r = await fetch('/admin/login/start?token=' + encodeURIComponent(token), {{ method: 'POST' }});
       document.getElementById('status').innerText = JSON.stringify(await r.json());
-      document.getElementById('vnc').src = document.getElementById('vnc').src;
+      // 桌面就绪后再连 noVNC，避免空闲时连接失败的报错
+      document.getElementById('vnc').src = VNC_URL;
     }}
     async function stop() {{
       const r = await fetch('/admin/login/stop?token=' + encodeURIComponent(token), {{ method: 'POST' }});
       document.getElementById('status').innerText = JSON.stringify(await r.json());
+      document.getElementById('vnc').src = 'about:blank';
     }}
     async function poll() {{
       try {{

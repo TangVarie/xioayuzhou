@@ -54,9 +54,11 @@
 
 ### 3. 第一次登录 zhuiguang.xyz
 1. 浏览器打开 `https://<你的域名>/admin/login?token=<ADMIN_TOKEN>`。
-2. 顶部点 **启动浏览器**，下方的 noVNC 区域里会出现一个真实 Chrome。
+2. 顶部点 **启动浏览器**，**等 2~3 秒**虚拟桌面拉起后，下方的 noVNC 区域里会出现一个真实 Chrome。
 3. 在那个浏览器里登录 zhuiguang.xyz。
-4. 顶部状态变成 `saved` 表示登录态已加密写到 `/data/storage_state.enc`，可关闭页面。
+4. 顶部状态变成 `saved` 表示登录态已加密写到 `/data/storage_state.enc`，桌面会自动释放，可关闭页面。
+
+> 虚拟桌面（Xvfb/x11vnc/websockify）是**按需启动**的：只有点"启动浏览器"时才拉起，登录成功或 10 分钟无操作后自动关闭。平时不占内存，所以日常空闲时容器只跑 uvicorn + nginx，省钱。
 5. 之后任何用户在飞书里点按钮都能直接抓数据；登录态失效时再来这一步即可。
 
 > 不想搞 noVNC 也可以本地用 Playwright 跑一次登录，把 `storage_state.json` 上传：
@@ -146,6 +148,7 @@ uvicorn app.main:app --reload --port 8000
 
 - zhuiguang.xyz 页面结构若改版，需调整 `app/scraper.py` 的正则/选择器。
 - 单实例服务，并发抓取会被 Playwright 串行化（高并发时可加队列）。
-- noVNC 仅在登录时使用，非登录时 headed Chrome 不会驻留，资源占用很低。
+- noVNC 虚拟桌面按需启动：仅登录时拉起，登录完/超时自动关；空闲时只剩 uvicorn + nginx，常驻内存很低。
+- 抓取用的 headless Chromium 每次抓完即关；配合 `MALLOC_ARENA_MAX=2` 抑制长驻进程的内存高水位。
 - 定时刷新完全交给飞书自动化的"按时间触发"，服务自身不跑 cron。
 - Railway Volume 不会随服务重启丢失，但**销毁服务/项目时会一起销毁**，记得迁移前先备份 `/data` 里的文件。
