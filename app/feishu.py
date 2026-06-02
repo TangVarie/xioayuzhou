@@ -99,7 +99,9 @@ def _normalize_fields(fields: dict[str, Any], specs: list[FieldSpec]) -> dict[st
     kind_by_name = {spec.name: spec.kind for spec in specs}
     out: dict[str, Any] = {}
     for name, value in fields.items():
-        if value is None:
+        # 跳过"无数据"——None / 空串 / 空列表都不写，避免把飞书里已有的值覆盖成空白。
+        # 注意用显式比较而非 `not value`，否则数字 0 / 0.0 也会被误当成空。
+        if value is None or value == "" or value == []:
             continue
         kind = kind_by_name.get(name)
         if kind in ("number", "duration"):
@@ -117,9 +119,12 @@ def _normalize_fields(fields: dict[str, Any], specs: list[FieldSpec]) -> dict[st
             out[name] = max(0.0, min(1.0, v))
         elif kind == "multi_select":
             if isinstance(value, str):
-                out[name] = [v.strip() for v in value.split(",") if v.strip()]
+                items = [v.strip() for v in value.split(",") if v.strip()]
             else:
-                out[name] = [str(v).strip() for v in value if str(v).strip()]
+                items = [str(v).strip() for v in value if str(v).strip()]
+            if not items:  # 解析后为空也跳过，不覆盖已有多选
+                continue
+            out[name] = items
         else:
             out[name] = value
     return out

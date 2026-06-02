@@ -111,7 +111,18 @@ async def admin_login_page(token: Optional[str] = Query(default=None)) -> HTMLRe
 </body>
 </html>
 """
-    return HTMLResponse(html)
+    resp = HTMLResponse(html)
+    # nginx 用这个 cookie 给 /novnc 和 /websockify 守门（见 nginx.conf）。
+    # 只有通过 ?token 校验、能打开本页的人才会拿到它，从而能连上 VNC 隧道。
+    resp.set_cookie(
+        "vnc_token",
+        token or "",
+        max_age=3600,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+    return resp
 
 
 @app.post("/admin/login/start")

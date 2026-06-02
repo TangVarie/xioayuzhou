@@ -9,8 +9,9 @@ export LISTEN_PORT="${PORT:-8080}"
 
 echo "[entrypoint] PORT=${PORT:-(unset)} LISTEN_PORT=${LISTEN_PORT} APP_PORT=${APP_PORT} NOVNC_PORT=${NOVNC_PORT}"
 
-# 渲染 nginx 站点配置（替换 ${LISTEN_PORT} 等占位符）
-envsubst '${APP_PORT} ${NOVNC_PORT} ${LISTEN_PORT}' \
+# 渲染 nginx 站点配置（替换 ${LISTEN_PORT} / ${ADMIN_TOKEN} 等占位符）
+# 注意：只列出我们自己的占位符，避免 envsubst 误替换 nginx 内置变量（$host 等）。
+envsubst '${APP_PORT} ${NOVNC_PORT} ${LISTEN_PORT} ${ADMIN_TOKEN}' \
   < /etc/nginx/sites-available/default \
   > /etc/nginx/sites-available/default.rendered
 mv /etc/nginx/sites-available/default.rendered /etc/nginx/sites-available/default
@@ -19,8 +20,7 @@ mv /etc/nginx/sites-available/default.rendered /etc/nginx/sites-available/defaul
 ln -sf /dev/stdout /var/log/nginx/access.log
 ln -sf /dev/stderr /var/log/nginx/error.log
 
-echo "[entrypoint] === rendered nginx site ==="
-cat /etc/nginx/sites-available/default
+# 只做语法测试；不要 cat 渲染后的配置——里面现在含 ADMIN_TOKEN，打到日志会泄露。
 echo "[entrypoint] === nginx -t ==="
 nginx -t || true
 echo "[entrypoint] ==========================="
