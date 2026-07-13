@@ -23,6 +23,7 @@ _scan_status: dict[str, Any] = {
     "total": 0,
     "done": 0,
     "ok": 0,
+    "partial": 0,
     "skipped": 0,
     "errors": 0,
     "started_at": None,
@@ -67,15 +68,10 @@ async def run_for_record(record_id: str) -> dict:
             await _log(record_id, link, "error", f"update_record failed: {exc}", {})
             return {"status": "error", "message": str(exc)}
 
+    status = "ok" if not result.missing else "partial"
     payload = {"fields": result.fields, "missing": result.missing}
-    await _log(
-        record_id,
-        link,
-        "ok" if not result.missing else "partial",
-        "",
-        payload,
-    )
-    return {"status": "ok", **payload}
+    await _log(record_id, link, status, "", payload)
+    return {"status": status, **payload}
 
 
 async def _log(
@@ -141,6 +137,7 @@ async def run_scan_all(*, delay_seconds: Optional[float] = None) -> dict:
             total=0,
             done=0,
             ok=0,
+            partial=0,
             skipped=0,
             errors=0,
             started_at=datetime.now(timezone.utc).isoformat(),
@@ -174,6 +171,8 @@ async def run_scan_all(*, delay_seconds: Optional[float] = None) -> dict:
                 status = result.get("status")
                 if status == "ok":
                     _scan_status["ok"] += 1
+                elif status == "partial":
+                    _scan_status["partial"] += 1
                 elif status == "skipped":
                     _scan_status["skipped"] += 1
                 else:

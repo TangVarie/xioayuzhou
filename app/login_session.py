@@ -112,6 +112,8 @@ async def start() -> dict:
             _status.update({"state": "error", "message": "虚拟桌面启动失败，请重试"})
             return dict(_status)
 
+        pw = None
+        browser = None
         try:
             pw = await async_playwright().start()
             browser = await pw.chromium.launch(
@@ -129,6 +131,19 @@ async def start() -> dict:
             await page.goto(LOGIN_URL, wait_until="domcontentloaded")
         except Exception as exc:
             LOGGER.exception("launch headed browser failed: %s", exc)
+            # 失败路径也必须关掉已经启起来的 browser + playwright 驱动，否则每次失败的
+            # 登录都会漏一个 node 驱动进程（甚至一个有头 chromium）——而且它们不是
+            # --headless，reaper 永远不会去清，只会不断累积。
+            if browser is not None:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+            if pw is not None:
+                try:
+                    await pw.stop()
+                except Exception:
+                    pass
             await _stop_x_stack()
             _status.update({"state": "error", "message": f"浏览器启动失败: {exc}"})
             return dict(_status)
@@ -142,13 +157,16 @@ async def start() -> dict:
             async with _teardown_lock:
                 if _torn["done"]:
                     return
-                _torn["done"] = True
                 for closer in (context.close, browser.close, pw.stop):
                     try:
                         await closer()
                     except Exception:
                         pass
                 await _stop_x_stack()
+                # 只有真正关完才标记 done：否则关的中途被 cancel（CancelledError 是
+                # BaseException，不被 except Exception 捕获）会带着 done=True 退出，
+                # 让随后的 stop() 短路，browser/pw 永远关不掉。
+                _torn["done"] = True
 
         async def _watcher() -> None:
             loop = asyncio.get_event_loop()

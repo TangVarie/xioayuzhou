@@ -13,14 +13,18 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from app import auth, login_session, reaper
 from app.config import get_settings
 from app.runner import run_for_record, run_scan_all, scan_status, tail_log
-from app.scraper import LoginRequired, is_scraping, scrape
+from app.scraper import LoginRequired, is_scraping, scrape, stuck_seconds
 
 LOGGER = logging.getLogger("uvicorn.error")
 
-# 看门狗：每 5 分钟巡检一次；清理存活超过这个秒数的 headless chromium。
-# 阈值远高于抓取硬超时（120s），所以绝不会误杀正在跑的抓取。
-_REAPER_INTERVAL_SECONDS = 300
+# 看门狗：每分钟巡检一次。
+# - 空闲时：清理存活超过 _ORPHAN_MIN_AGE_SECONDS 的 headless chromium（孤儿）。
+# - 有抓取但已卡死超过 _STUCK_SCRAPE_SECONDS：强杀所有 headless chromium，让卡住的
+#   browser.close() 因管道 EOF 而返回，从而释放 semaphore、自愈死锁。
+# 两个阈值都远高于抓取硬超时（120s），绝不会误杀正常进行中的抓取。
+_REAPER_INTERVAL_SECONDS = 60
 _ORPHAN_MIN_AGE_SECONDS = 180
+_STUCK_SCRAPE_SECONDS = 180
 
 
 class _RedactTokenFilter(logging.Filter):
@@ -47,11 +51,17 @@ async def _reaper_watchdog() -> None:
     while True:
         try:
             await asyncio.sleep(_REAPER_INTERVAL_SECONDS)
-            if is_scraping():
-                continue  # 有抓取在跑就跳过这一轮（额外保险，年龄阈值本已足够）
-            killed = await asyncio.to_thread(reaper.sweep, _ORPHAN_MIN_AGE_SECONDS)
-            if killed:
-                LOGGER.warning("reaper watchdog killed orphan chromium: %s", killed)
+            stuck = stuck_seconds()
+            if stuck is not None and stuck > _STUCK_SCRAPE_SECONDS:
+                # 抓取卡死了：强杀所有 headless chromium 打破死锁。
+                killed = await asyncio.to_thread(reaper.sweep, 0.0)
+                if killed:
+                    LOGGER.warning("reaper killed stuck-scrape chromium (%.0fs): %s", stuck, killed)
+            elif not is_scraping():
+                killed = await asyncio.to_thread(reaper.sweep, _ORPHAN_MIN_AGE_SECONDS)
+                if killed:
+                    LOGGER.warning("reaper watchdog killed orphan chromium: %s", killed)
+            # 否则：有抓取在正常进行（未超时），什么都不做。
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
