@@ -23,6 +23,18 @@ class FeishuClient:
         self._token_expire_at: float = 0.0
         self._http = httpx.Client(timeout=20.0)
 
+    def close(self) -> None:
+        try:
+            self._http.close()
+        except Exception:
+            pass
+
+    def __enter__(self) -> "FeishuClient":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
     def _tenant_token(self) -> str:
         if self._token and time.time() < self._token_expire_at - 60:
             return self._token

@@ -1,20 +1,82 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from app import auth, login_session
+from app import auth, login_session, reaper
 from app.config import get_settings
 from app.runner import run_for_record, run_scan_all, scan_status, tail_log
-from app.scraper import LoginRequired, scrape
+from app.scraper import LoginRequired, is_scraping, scrape
 
 LOGGER = logging.getLogger("uvicorn.error")
-app = FastAPI(title="xiaoyuzhou-zhuiguang-sync")
+
+# 看门狗：每 5 分钟巡检一次；清理存活超过这个秒数的 headless chromium。
+# 阈值远高于抓取硬超时（120s），所以绝不会误杀正在跑的抓取。
+_REAPER_INTERVAL_SECONDS = 300
+_ORPHAN_MIN_AGE_SECONDS = 180
+
+
+class _RedactTokenFilter(logging.Filter):
+    """把访问日志里的 ?token=xxx 打码，避免 admin token 落到 Railway 日志。"""
+
+    _RE = re.compile(r"(token=)[^&\s\"']+")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.args:
+            try:
+                record.args = tuple(
+                    self._RE.sub(r"\1REDACTED", a) if isinstance(a, str) else a
+                    for a in record.args
+                )
+            except Exception:
+                pass
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_RedactTokenFilter())
+
+
+async def _reaper_watchdog() -> None:
+    while True:
+        try:
+            await asyncio.sleep(_REAPER_INTERVAL_SECONDS)
+            if is_scraping():
+                continue  # 有抓取在跑就跳过这一轮（额外保险，年龄阈值本已足够）
+            killed = await asyncio.to_thread(reaper.sweep, _ORPHAN_MIN_AGE_SECONDS)
+            if killed:
+                LOGGER.warning("reaper watchdog killed orphan chromium: %s", killed)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("reaper watchdog error: %s", exc)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动即清一遍上次遗留的 headless chromium（正常启动时不该有任何一个）。
+    try:
+        await asyncio.to_thread(reaper.startup_sweep)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("startup_sweep failed: %s", exc)
+    task = asyncio.create_task(_reaper_watchdog())
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+app = FastAPI(title="xiaoyuzhou-zhuiguang-sync", lifespan=lifespan)
 
 
 @app.get("/healthz")

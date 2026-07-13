@@ -14,8 +14,19 @@ from app.config import Settings, get_settings
 LOGGER = logging.getLogger(__name__)
 
 VIEWPORT = {"width": 1440, "height": 900}
-NAV_TIMEOUT_MS = 60000
+NAV_TIMEOUT_MS = 45000
+DATA_WAIT_MS = 15000  # domcontentloaded 后等 podcast/get 响应的上限
+SCRAPE_HARD_TIMEOUT = 120.0  # 单次抓取硬超时（秒）；卡死也强制收摊
 TOP_N = 2  # 多选字段：取占比前 N 名
+
+# 同一时刻只允许一个 headless 浏览器：省内存，也让"没有抓取在跑 ⇒ 不该有
+# headless chromium 存活"这个不变量成立，reaper 才能安全地清理孤儿浏览器。
+_scrape_sem = asyncio.Semaphore(1)
+
+
+def is_scraping() -> bool:
+    """当前是否有抓取正在进行（reaper 看门狗用作额外保险）。"""
+    return _scrape_sem.locked()
 
 PID_RE = re.compile(r"/podcast/([0-9a-fA-F]+)")
 
@@ -60,83 +71,108 @@ async def scrape(url: str, *, debug: bool = False) -> ScrapeResult:
         raise ValueError(f"URL 里找不到 pid: {url}")
 
     settings = get_settings()
+    # 串行 + 硬超时：同一时刻一个浏览器，且单次抓取绝不超过 SCRAPE_HARD_TIMEOUT。
+    async with _scrape_sem:
+        return await asyncio.wait_for(
+            _scrape_once(url, pid, settings, debug, state), timeout=SCRAPE_HARD_TIMEOUT
+        )
 
+
+async def _scrape_once(
+    url: str, pid: str, settings: Settings, debug: bool, state: dict
+) -> ScrapeResult:
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True, args=["--no-sandbox"])
-        context = await browser.new_context(storage_state=state, viewport=VIEWPORT)
-        page = await context.new_page()
-        xhr: list[dict[str, Any]] = []
+        # try/finally 兜底：无论正常返回、抛 LoginRequired、超时被取消还是任何异常，
+        # 浏览器一定被关掉——这是杜绝孤儿 chromium 空转吃 CPU 的根本修复。
+        try:
+            context = await browser.new_context(storage_state=state, viewport=VIEWPORT)
+            page = await context.new_page()
+            xhr: list[dict[str, Any]] = []
 
-        async def on_response(resp):
-            try:
-                ct = (resp.headers or {}).get("content-type", "")
-                if "application/json" not in ct:
+            async def on_response(resp):
+                try:
+                    ct = (resp.headers or {}).get("content-type", "")
+                    if "application/json" not in ct:
+                        return
+                    if resp.status >= 400:
+                        return
+                    body = await resp.json()
+                    xhr.append({"url": resp.url, "status": resp.status, "body": body})
+                except Exception:
                     return
-                if resp.status >= 400:
-                    return
-                body = await resp.json()
-                xhr.append({"url": resp.url, "status": resp.status, "body": body})
-            except Exception:
-                return
 
-        page.on("response", on_response)
+            page.on("response", on_response)
 
-        await page.goto(url, wait_until="networkidle", timeout=NAV_TIMEOUT_MS)
+            # domcontentloaded 而非 networkidle：zhuiguang 是实时 SPA（有轮询/长连接），
+            # networkidle 可能永不触发导致每次都卡到超时。加载完 DOM 就走，然后精准等
+            # podcast/get 这条响应到达即可，拿不到再走下面的兜底 fetch。
+            await page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
 
-        if _looks_like_login_page(page.url):
-            await browser.close()
-            raise LoginRequired("zhuiguang.xyz 登录态已失效，请重新登录")
+            if _looks_like_login_page(page.url):
+                raise LoginRequired("zhuiguang.xyz 登录态已失效，请重新登录")
 
-        # 给 response handler 一点时间完成（await body 是异步的）
-        await asyncio.sleep(0.5)
-
-        api_data = _find_podcast_data(xhr, pid)
-
-        # 兜底：XHR 没捕获到就主动调一次
-        if api_data is None:
             try:
-                api_data = await page.evaluate(
-                    """async (pid) => {
-                        const r = await fetch('https://api.zhuiguang.xyz/v1/podcast/get?pid=' + pid, {credentials: 'include'});
-                        if (!r.ok) return null;
-                        const j = await r.json();
-                        return j.data || null;
-                    }""",
-                    pid,
+                await page.wait_for_response(
+                    lambda r: "/v1/podcast/get" in r.url and r.status < 400,
+                    timeout=DATA_WAIT_MS,
                 )
-            except Exception as exc:
-                LOGGER.warning("fallback fetch podcast/get failed: %s", exc)
-
-        result = ScrapeResult(url=url, raw_xhr=xhr, api_data=api_data)
-
-        if api_data:
-            result.fields = _extract_from_api(api_data, settings)
-
-        # 给所有 spec 都补上 key（即使是 None / []），方便上层一致处理 missing
-        for spec in settings.field_specs():
-            result.fields.setdefault(spec.name, [] if spec.kind == "multi_select" else None)
-        result.missing = [
-            spec.name
-            for spec in settings.field_specs()
-            if result.fields.get(spec.name) in (None, "", [])
-        ]
-
-        if debug:
-            shot = "/tmp/zhuiguang_debug.png"
-            try:
-                await page.screenshot(path=shot, full_page=True)
-                result.screenshot_path = shot
             except Exception:
                 pass
+            # 给 on_response 回调把 body 读完（await body 是异步的）
+            await asyncio.sleep(0.3)
+
+            api_data = _find_podcast_data(xhr, pid)
+
+            # 兜底：XHR 没捕获到就在登录态下主动调一次
+            if api_data is None:
+                try:
+                    api_data = await page.evaluate(
+                        """async (pid) => {
+                            const r = await fetch('https://api.zhuiguang.xyz/v1/podcast/get?pid=' + pid, {credentials: 'include'});
+                            if (!r.ok) return null;
+                            const j = await r.json();
+                            return j.data || null;
+                        }""",
+                        pid,
+                    )
+                except Exception as exc:
+                    LOGGER.warning("fallback fetch podcast/get failed: %s", exc)
+
+            result = ScrapeResult(url=url, raw_xhr=xhr, api_data=api_data)
+
+            if api_data:
+                result.fields = _extract_from_api(api_data, settings)
+
+            # 给所有 spec 都补上 key（即使是 None / []），方便上层一致处理 missing
+            for spec in settings.field_specs():
+                result.fields.setdefault(spec.name, [] if spec.kind == "multi_select" else None)
+            result.missing = [
+                spec.name
+                for spec in settings.field_specs()
+                if result.fields.get(spec.name) in (None, "", [])
+            ]
+
+            if debug:
+                shot = "/tmp/zhuiguang_debug.png"
+                try:
+                    await page.screenshot(path=shot, full_page=True)
+                    result.screenshot_path = shot
+                except Exception:
+                    pass
+                try:
+                    result.page_text = await page.evaluate("() => document.body.innerText")
+                except Exception:
+                    pass
+
+            state_after = await context.storage_state()
+            save_state(state_after)
+            return result
+        finally:
             try:
-                result.page_text = await page.evaluate("() => document.body.innerText")
+                await browser.close()
             except Exception:
                 pass
-
-        state_after = await context.storage_state()
-        save_state(state_after)
-        await browser.close()
-        return result
 
 
 def _extract_pid(url: str) -> Optional[str]:
