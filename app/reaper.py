@@ -77,13 +77,23 @@ def _cmdline(pid: int) -> str:
     return raw.replace(b"\x00", b" ").decode("utf-8", "replace")
 
 
+def _argv0(cmdline: str) -> str:
+    """The executable (first argv token), lowercased. Matching markers against
+    this — not the whole cmdline — avoids false positives from arbitrary text
+    that happens to appear in later arguments."""
+    return cmdline.split(" ", 1)[0].lower()
+
+
 def is_headless_chromium(cmdline: str) -> bool:
     """True only for a headless browser process. The headed login browser
-    (no --headless flag) returns False. Kept pure + public for unit testing."""
+    (no --headless flag) returns False. Kept pure + public for unit testing.
+    The browser check is anchored to argv[0] (the binary), so a stray
+    'chromium'/'chrome' substring in some other process's arguments can never
+    cause a false kill."""
     if "--headless" not in cmdline:
         return False
-    lowered = cmdline.lower()
-    return any(marker in lowered for marker in _BROWSER_MARKERS)
+    argv0 = _argv0(cmdline)
+    return any(marker in argv0 for marker in _BROWSER_MARKERS)
 
 
 def _iter_pids() -> Iterator[int]:
@@ -141,6 +151,44 @@ def sweep(min_age_seconds: float = 0.0) -> list[int]:
             except (ProcessLookupError, PermissionError):
                 pass
     return killed
+
+
+# 用 playwright 浏览器的路径特征（chrome-linux / headless_shell / chromium）而不是裸
+# "chrome"，避免误列无关进程。X 栈进程名各自唯一。
+_DIAG_MARKERS = (
+    "chrome-linux", "headless_shell", "chromium",
+    "xvfb", "x11vnc", "websockify", "fluxbox",
+)
+
+
+def list_relevant_processes() -> list[dict]:
+    """诊断用：列出容器里所有浏览器 / 虚拟桌面相关进程（pid、存活秒数、是否 headless、
+    命令行片段），用来判断 CPU 到底被什么占着。空闲时应当为空。"""
+    if not _supported():
+        return []
+    try:
+        uptime = _uptime_seconds()
+    except (OSError, ValueError):
+        return []
+    self_pid = os.getpid()
+    out: list[dict] = []
+    for pid in _iter_pids():
+        if pid in (self_pid, 1):
+            continue
+        cl = _cmdline(pid)
+        argv0 = _argv0(cl)
+        if not any(m in argv0 for m in _DIAG_MARKERS):
+            continue
+        age = _proc_start_seconds(pid, uptime)
+        out.append(
+            {
+                "pid": pid,
+                "age_seconds": round(age, 1) if age is not None else None,
+                "headless": is_headless_chromium(cl),
+                "cmd": cl[:160],
+            }
+        )
+    return out
 
 
 def startup_sweep() -> list[int]:

@@ -307,6 +307,19 @@ async def admin_log(
     return {"entries": tail_log(n)}
 
 
+@app.get("/admin/diag")
+async def admin_diag(token: Optional[str] = Query(default=None)) -> dict:
+    """诊断：容器里到底跑着哪些浏览器/桌面进程 + 抓取/登录状态。
+    空闲时 processes 应为空、is_scraping=false、login.state 非 waiting。"""
+    _require_admin(token)
+    return {
+        "is_scraping": is_scraping(),
+        "stuck_seconds": stuck_seconds(),
+        "login": login_session.get_status(),
+        "processes": reaper.list_relevant_processes(),
+    }
+
+
 def _require_admin(token: Optional[str]) -> None:
     s = get_settings()
     if token != s.admin_token:
